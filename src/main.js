@@ -1,8 +1,10 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import JSZip from "jszip";
 
 const fileInput = document.getElementById("file");
 const detectedTypeEl = document.getElementById("detectedType");
+
 const splitSizeSelect = document.getElementById("splitSize");
 const customSecondsInput = document.getElementById("customSeconds");
 const customLabel = document.getElementById("customLabel");
@@ -12,8 +14,12 @@ const progressEl = document.getElementById("progress");
 const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const linksEl = document.getElementById("links");
+const zipBtn = document.getElementById("zipBtn");
 
 const ffmpeg = new FFmpeg();
+
+// This will store chunk files so we can ZIP them
+let zipFiles = []; // { name: string, data: Uint8Array, mime: string }
 
 function log(msg) {
   logEl.textContent += msg + "\n";
@@ -53,6 +59,7 @@ async function loadFFmpeg() {
   statusEl.textContent = "Loading FFmpeg (first time is slower)...";
   log("Loading FFmpeg core...");
 
+  // Works without special cross-origin isolation headers
   const coreBaseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
   const ffmpegBaseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm";
 
@@ -86,7 +93,10 @@ splitSizeSelect.addEventListener("change", () => {
 
 fileInput.addEventListener("change", () => {
   const f = fileInput.files?.[0];
-  if (!f) return;
+  if (!f) {
+    detectedTypeEl.textContent = "";
+    return;
+  }
 
   if (isVideoFile(f)) detectedTypeEl.textContent = `Detected: VIDEO (${f.type || "unknown"})`;
   else if (isAudioFile(f)) detectedTypeEl.textContent = `Detected: AUDIO (${f.type || "unknown"})`;
@@ -105,6 +115,44 @@ async function deleteOldOutputs() {
   }
 }
 
+// ZIP BUTTON BEHAVIOR
+zipBtn?.addEventListener("click", async () => {
+  try {
+    if (!zipFiles.length) {
+      alert("No files to zip yet. Split something first.");
+      return;
+    }
+
+    zipBtn.disabled = true;
+    zipBtn.textContent = "Creating ZIP...";
+
+    const zip = new JSZip();
+
+    for (const f of zipFiles) {
+      // f.data is Uint8Array from ffmpeg.readFile()
+      zip.file(f.name, f.data);
+    }
+
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "split_files.zip";
+    a.click();
+
+    URL.revokeObjectURL(url);
+
+    zipBtn.textContent = "Download all as ZIP";
+    zipBtn.disabled = false;
+  } catch (err) {
+    console.error(err);
+    alert("ZIP failed: " + (err?.message || err));
+    zipBtn.textContent = "Download all as ZIP";
+    zipBtn.disabled = false;
+  }
+});
+
 startBtn.addEventListener("click", async () => {
   try {
     const file = fileInput.files?.[0];
@@ -118,10 +166,17 @@ startBtn.addEventListener("click", async () => {
       alert("Split time must be 1 second or more.");
       return;
     }
+    if (!isAudioFile(file) && !isVideoFile(file)) {
+      alert("That file doesn't look like audio or video. Try another file.");
+      return;
+    }
 
+    // Reset UI + ZIP state
     clearOldLinks();
     progressEl.value = 0;
     logEl.textContent = "";
+    zipFiles = [];
+    if (zipBtn) zipBtn.style.display = "none";
 
     await loadFFmpeg();
     await deleteOldOutputs();
@@ -136,79 +191,119 @@ startBtn.addEventListener("click", async () => {
     const inputName = isVideoFile(file) ? "input.mp4" : "input_audio";
     await ffmpeg.writeFile(inputName, await fetchFile(file));
 
+    // ===========================
     // VIDEO MODE (fast split)
+    // ===========================
     if (isVideoFile(file)) {
       log("\n--- VIDEO MODE ---");
+      log("Fast split enabled (-c copy).");
       statusEl.textContent = "Splitting video...";
 
       const outputPattern = "clip_%03d.mp4";
 
       await ffmpeg.exec([
-        "-i", inputName,
-        "-map", "0",
-        "-c", "copy",
-        "-f", "segment",
-        "-segment_time", String(seconds),
-        "-reset_timestamps", "1",
+        "-i",
+        inputName,
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-f",
+        "segment",
+        "-segment_time",
+        String(seconds),
+        "-reset_timestamps",
+        "1",
         outputPattern,
       ]);
 
-      statusEl.textContent = "Collecting clips...";
+      statusEl.textContent = "Collecting video clips...";
       const files = await ffmpeg.listDir(".");
       const clips = files
         .map((f) => f.name)
         .filter((n) => n.startsWith("clip_") && n.endsWith(".mp4"))
         .sort();
 
+      if (!clips.length) {
+        statusEl.textContent = "Done, but no clips were created";
+        log("No clips created. Try another file or segment size.");
+        return;
+      }
+
       for (let i = 0; i < clips.length; i++) {
         const data = await ffmpeg.readFile(clips[i]);
-        makeDownloadLink(`${baseName}_${String(i + 1).padStart(3, "0")}.mp4`, data, "video/mp4");
+        const niceName = `${baseName}_${String(i + 1).padStart(3, "0")}.mp4`;
+
+        makeDownloadLink(niceName, data, "video/mp4");
+        zipFiles.push({ name: niceName, data, mime: "video/mp4" });
       }
 
       statusEl.textContent = `Done ✅ (${clips.length} clips)`;
+
+      // show ZIP button
+      if (zipBtn) zipBtn.style.display = "inline-block";
       return;
     }
 
+    // ===========================
     // AUDIO MODE (re-encode to mp3)
+    // ===========================
     if (isAudioFile(file)) {
       log("\n--- AUDIO MODE ---");
+      log("Exports to MP3 for compatibility.");
       statusEl.textContent = "Splitting audio...";
 
       const outputPattern = "chunk_%03d.mp3";
 
       await ffmpeg.exec([
-        "-i", inputName,
-        "-c:a", "libmp3lame",
-        "-b:a", "192k",
-        "-f", "segment",
-        "-segment_time", String(seconds),
-        "-reset_timestamps", "1",
+        "-i",
+        inputName,
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "192k",
+        "-f",
+        "segment",
+        "-segment_time",
+        String(seconds),
+        "-reset_timestamps",
+        "1",
         outputPattern,
       ]);
 
-      statusEl.textContent = "Collecting chunks...";
+      statusEl.textContent = "Collecting audio chunks...";
       const files = await ffmpeg.listDir(".");
       const chunks = files
         .map((f) => f.name)
         .filter((n) => n.startsWith("chunk_") && n.endsWith(".mp3"))
         .sort();
 
+      if (!chunks.length) {
+        statusEl.textContent = "Done, but no chunks were created";
+        log("No chunks created. Try another file or segment size.");
+        return;
+      }
+
       for (let i = 0; i < chunks.length; i++) {
         const data = await ffmpeg.readFile(chunks[i]);
-        makeDownloadLink(`${baseName}_${String(i + 1).padStart(3, "0")}.mp3`, data, "audio/mpeg");
+        const niceName = `${baseName}_${String(i + 1).padStart(3, "0")}.mp3`;
+
+        makeDownloadLink(niceName, data, "audio/mpeg");
+        zipFiles.push({ name: niceName, data, mime: "audio/mpeg" });
       }
 
       statusEl.textContent = `Done ✅ (${chunks.length} chunks)`;
+
+      // show ZIP button
+      if (zipBtn) zipBtn.style.display = "inline-block";
       return;
     }
-
-    alert("That file isn't audio or video.");
   } catch (err) {
     console.error(err);
     statusEl.textContent = "Error ❌";
     log(`ERROR: ${err?.message || err}`);
     log("\nIf it fails:");
     log("- Try 10 or 20 minute segments.");
-    log("- Very large files may crash due to browser memory limits.");
+    log("- Huge files may crash due to browser memory limits.");
   }
 });

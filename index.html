@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Free Local Video/Audio Splitter</title>
+    <title>Video + Audio Splitter (Local + Free)</title>
     <style>
       body { font-family: system-ui, Arial; margin: 24px; max-width: 980px; }
       .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -14,14 +14,18 @@
       #log { white-space: pre-wrap; background: #111; color: #eee; padding: 12px; border-radius: 8px; }
       .card { padding: 12px; border: 1px solid #ddd; border-radius: 10px; margin-top: 12px; }
       .small { opacity: 0.85; font-size: 0.95rem; }
+      .tag { display: inline-block; padding: 4px 10px; border: 1px solid #ddd; border-radius: 999px; font-size: 0.85rem; }
     </style>
   </head>
 
   <body>
-    <h1>Video + Audio Splitter (Local + Free)</h1>
+    <h1>Video + Audio Splitter (100% Local + Free)</h1>
     <p class="small">
       Upload a video OR audio file → choose 5/10/20 minute segments → split → download.
-      Nothing uploads anywhere.
+      <br />
+      <span class="tag">Nothing uploads</span>
+      <span class="tag">Runs in browser</span>
+      <span class="tag">Free</span>
     </p>
 
     <div class="card">
@@ -36,6 +40,7 @@
           <option value="300">5 minutes</option>
           <option value="600" selected>10 minutes</option>
           <option value="1200">20 minutes</option>
+          <option value="1800">30 minutes</option>
           <option value="custom">Custom…</option>
         </select>
 
@@ -49,9 +54,24 @@
         <progress id="progress" value="0" max="1"></progress>
         <span id="status"></span>
       </div>
+
+      <p class="small" style="margin-top: 10px;">
+        Notes:
+        <br />• Video splitting is super fast (no re-encode) but may cut slightly off exact times.
+        <br />• Audio splitting exports MP3 chunks for compatibility.
+      </p>
     </div>
 
     <h2>Downloads</h2>
+
+    <!-- ✅ ZIP BUTTON (HIDDEN UNTIL SPLIT FINISHES) -->
+    <button
+      id="zipBtn"
+      style="display:none; padding:10px; margin-bottom:10px; cursor:pointer;"
+    >
+      Download all as ZIP
+    </button>
+
     <div id="links"></div>
 
     <h2>Log</h2>
