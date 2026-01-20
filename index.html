@@ -1,81 +1,158 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Video + Audio Splitter (Local + Free)</title>
+    <title>Audio / Video Splitter</title>
+
     <style>
-      body { font-family: system-ui, Arial; margin: 24px; max-width: 980px; }
-      .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-      select, input, button { padding: 10px; }
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 980px;
+        margin: 20px auto;
+        padding: 0 14px;
+      }
+      h1 { margin-bottom: 6px; }
+      .small { font-size: 13px; color: #444; }
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin: 10px 0;
+      }
+      .box {
+        padding: 12px;
+        border: 1px solid #ddd;
+        border-radius: 12px;
+      }
+      select, input, button {
+        padding: 8px;
+        font-size: 14px;
+      }
       button { cursor: pointer; }
-      progress { width: 340px; height: 18px; }
+      #log {
+        white-space: pre-wrap;
+        background: #111;
+        color: #eee;
+        padding: 10px;
+        border-radius: 12px;
+        min-height: 150px;
+      }
       #links a { display: block; margin: 6px 0; }
-      #log { white-space: pre-wrap; background: #111; color: #eee; padding: 12px; border-radius: 8px; }
-      .card { padding: 12px; border: 1px solid #ddd; border-radius: 10px; margin-top: 12px; }
-      .small { opacity: 0.85; font-size: 0.95rem; }
-      .tag { display: inline-block; padding: 4px 10px; border: 1px solid #ddd; border-radius: 999px; font-size: 0.85rem; }
+      progress { width: 100%; height: 18px; }
+      .warn {
+        background: #fff6d8;
+        border: 1px solid #ffd36b;
+        padding: 10px;
+        border-radius: 12px;
+        margin-top: 10px;
+      }
     </style>
   </head>
 
   <body>
-    <h1>Video + Audio Splitter (100% Local + Free)</h1>
-    <p class="small">
-      Upload a video OR audio file → choose 5/10/20 minute segments → split → download.
-      <br />
-      <span class="tag">Nothing uploads</span>
-      <span class="tag">Runs in browser</span>
-      <span class="tag">Free</span>
-    </p>
-
-    <div class="card">
-      <div class="row">
-        <input id="file" type="file" accept="video/*,audio/*" />
-        <span id="detectedType" class="small"></span>
-      </div>
-
-      <div class="row" style="margin-top: 10px;">
-        <label><b>Split size:</b></label>
-        <select id="splitSize">
-          <option value="300">5 minutes</option>
-          <option value="600" selected>10 minutes</option>
-          <option value="1200">20 minutes</option>
-          <option value="1800">30 minutes</option>
-          <option value="custom">Custom…</option>
-        </select>
-
-        <input id="customSeconds" type="number" min="1" value="600" style="display:none; width:160px;" />
-        <span id="customLabel" style="display:none;">seconds</span>
-
-        <button id="start">Split</button>
-      </div>
-
-      <div class="row" style="margin-top: 12px;">
-        <progress id="progress" value="0" max="1"></progress>
-        <span id="status"></span>
-      </div>
-
-      <p class="small" style="margin-top: 10px;">
-        Notes:
-        <br />• Video splitting is super fast (no re-encode) but may cut slightly off exact times.
-        <br />• Audio splitting exports MP3 chunks for compatibility.
-      </p>
+    <h1>Audio / Video Splitter</h1>
+    <div class="small">
+      Split big audio/video into chunks, download all as ZIP, and optionally auto-transcribe.
     </div>
 
-    <h2>Downloads</h2>
+    <!-- File input -->
+    <div class="row box">
+      <input id="file" type="file" accept="audio/*,video/*" />
+      <div id="detectedType" class="small"></div>
+    </div>
 
-    <!-- ✅ ZIP BUTTON (HIDDEN UNTIL SPLIT FINISHES) -->
-    <button
-      id="zipBtn"
-      style="display:none; padding:10px; margin-bottom:10px; cursor:pointer;"
-    >
-      Download all as ZIP
-    </button>
+    <!-- Split size -->
+    <div class="row box">
+      <label><b>Split size:</b></label>
 
-    <div id="links"></div>
+      <select id="splitSize">
+        <option value="300">5 minutes</option>
+        <option value="600">10 minutes</option>
+        <option value="1200" selected>20 minutes</option>
+        <option value="1800">30 minutes</option>
+        <option value="custom">Custom seconds</option>
+      </select>
 
-    <h2>Log</h2>
-    <div id="log"></div>
+      <span id="customLabel" style="display:none;">Seconds:</span>
+      <input
+        id="customSeconds"
+        type="number"
+        min="1"
+        value="600"
+        style="display:none; width:130px;"
+      />
+    </div>
+
+    <!-- Transcription mode -->
+    <div class="row box">
+      <label><b>Transcription mode:</b></label>
+
+      <select id="transcribeMode">
+        <option value="none" selected>OFF (just split + ZIP)</option>
+        <option value="simple">SIMPLE Local Transcript (no speakers, no API)</option>
+        <option value="best">BEST Website Diarization (speakers + timestamps, heavy)</option>
+        <option value="pro">AI PRO (GPT) — Best quality (Bring Your Own Key)</option>
+      </select>
+
+      <div class="small">
+        SIMPLE + BEST run in your browser. PRO uses OpenAI (you paste your own key).
+      </div>
+
+      <div class="warn small">
+        <b>Note:</b> BEST mode downloads large AI models and can be slow on weak PCs.
+        Chrome is recommended.
+      </div>
+    </div>
+
+    <!-- PRO key box -->
+    <div id="proBox" class="box" style="display:none;">
+      <div class="row">
+        <input
+          id="apiKey"
+          type="password"
+          placeholder="OpenAI API Key (sk-...)"
+          style="min-width:320px;"
+        />
+
+        <label style="display:flex; align-items:center; gap:6px;">
+          <input id="rememberKey" type="checkbox" checked />
+          Remember key on this device
+        </label>
+
+        <button id="clearKey" type="button">Clear saved key</button>
+      </div>
+
+      <div class="small">
+        Your key is stored only in your browser storage (if enabled).
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="row">
+      <button id="start">Split</button>
+
+      <button id="zipBtn" style="display:none; padding:10px; margin-bottom:10px;">
+        Download all as ZIP
+      </button>
+    </div>
+
+    <progress id="progress" value="0" max="1"></progress>
+    <div id="status" class="small" style="margin:8px 0;"></div>
+
+    <!-- Output -->
+    <div class="row box">
+      <div style="flex:1;">
+        <div class="small"><b>Downloads:</b></div>
+        <div id="links"></div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="small"><b>Log:</b></div>
+      <div id="log"></div>
+    </div>
 
     <script type="module" src="/src/main.js"></script>
   </body>
