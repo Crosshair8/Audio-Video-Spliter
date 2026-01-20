@@ -89,6 +89,37 @@
       />
     </div>
 
+    <hr style="margin:16px 0;" />
+
+<div style="padding:10px; border:1px solid #333; border-radius:8px; margin-bottom:12px;">
+  <div style="font-weight:700; margin-bottom:8px;">Quality Settings</div>
+
+  <label style="display:block; margin-bottom:6px;">
+    AI PRO WAV Quality:
+    <select id="wavQuality" style="margin-left:6px;">
+      <option value="fast" selected>Fast (16kHz mono WAV) - smallest</option>
+      <option value="good">Good (24kHz mono WAV)</option>
+      <option value="best">Best (48kHz mono WAV) - closest</option>
+      <option value="orig">Original-ish (48kHz stereo WAV) - biggest</option>
+    </select>
+  </label>
+
+  <label style="display:block;">
+    SIMPLE MP3 Quality:
+    <select id="mp3Quality" style="margin-left:6px;">
+      <option value="96">Low (96 kbps MP3)</option>
+      <option value="128" selected>Normal (128 kbps MP3)</option>
+      <option value="192">High (192 kbps MP3)</option>
+      <option value="256">Very High (256 kbps MP3)</option>
+      <option value="320">Best (320 kbps MP3)</option>
+    </select>
+  </label>
+
+  <small style="display:block; margin-top:8px; opacity:0.8;">
+    Higher quality = bigger files + slower splitting/upload.
+  </small>
+</div>
+
     <!-- Transcription mode -->
     <div class="row box">
       <label><b>Transcription mode:</b></label>

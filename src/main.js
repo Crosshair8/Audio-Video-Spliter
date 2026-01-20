@@ -37,6 +37,10 @@ const statusEl = document.getElementById("status");
 const linksEl = document.getElementById("links");
 const logEl = document.getElementById("log");
 
+const wavQuality = document.getElementById("wavQuality");
+const mp3Quality = document.getElementById("mp3Quality");
+
+
 // =============================
 // Progress (MONOTONIC - never goes backwards)
 // =============================
@@ -303,6 +307,35 @@ async function docxFromLines(lines) {
   return await Packer.toBlob(doc);
 }
 
+function getWavPreset(preset) {
+  // AI PRO WAV quality presets
+  switch (preset) {
+    case "fast":
+      return { ar: 16000, ac: 1 }; // smallest, fastest
+    case "good":
+      return { ar: 24000, ac: 1 };
+    case "best":
+      return { ar: 48000, ac: 1 }; // best voice detail, still mono
+    case "orig":
+      return { ar: 48000, ac: 2 }; // closest to original audio (biggest)
+    default:
+      return { ar: 16000, ac: 1 };
+  }
+}
+
+function getMp3Preset(kbps) {
+  const rate = Number(kbps);
+  // SIMPLE MP3 presets (bitrate only, keep safe/compatible)
+  return {
+    bitrate: Number.isFinite(rate) ? rate : 128,
+    ar: 44100, // better quality than 16k
+    ac: 2,     // stereo for closer-to-original
+  };
+}
+
+
+
+
 // =============================
 // Split media into chunks
 // =============================
@@ -317,7 +350,7 @@ async function splitMedia(file, splitSec, forceProWav = false) {
   try { await ff.deleteFile(inputName); } catch {}
   await ff.writeFile(inputName, await fetchFile(file));
 
-  // ✅ PRO MODE: output WAV (PCM 16-bit) chunks for max compatibility
+  // ✅ PRO MODE: output WAV chunks for max compatibility
   const outputWav = forceProWav === true;
 
   const pattern = outputWav
@@ -329,13 +362,17 @@ async function splitMedia(file, splitSec, forceProWav = false) {
 
   bumpProgress(0.05);
 
+  // ✅ Grab quality settings
+  const wavPreset = getWavPreset(wavQuality?.value || "fast");
+  const mp3Preset = getMp3Preset(mp3Quality?.value || "128");
+
   if (outputWav) {
-    setStatus("Splitting PRO audio as WAV (most compatible)...");
+    setStatus("Splitting PRO audio as WAV (quality selectable)...");
     await ff.exec([
       "-i", inputName,
       "-vn",
-      "-ac", "1",
-      "-ar", "16000",
+      "-ac", String(wavPreset.ac),
+      "-ar", String(wavPreset.ar),
       "-c:a", "pcm_s16le",
       "-f", "segment",
       "-segment_time", String(splitSec),
@@ -343,14 +380,14 @@ async function splitMedia(file, splitSec, forceProWav = false) {
       pattern
     ]);
   } else if (isAudio) {
-    setStatus("Splitting audio (MP3)...");
+    setStatus("Splitting audio (MP3 quality selectable)...");
     await ff.exec([
       "-i", inputName,
       "-vn",
-      "-ac", "1",
-      "-ar", "16000",
+      "-ac", String(mp3Preset.ac),
+      "-ar", String(mp3Preset.ar),
       "-c:a", "libmp3lame",
-      "-b:a", "128k",
+      "-b:a", `${mp3Preset.bitrate}k`,
       "-f", "segment",
       "-segment_time", String(splitSec),
       "-reset_timestamps", "1",
@@ -377,7 +414,7 @@ async function splitMedia(file, splitSec, forceProWav = false) {
         "-preset", "veryfast",
         "-crf", "23",
         "-c:a", "aac",
-        "-b:a", "128k",
+        "-b:a", "192k",
         "-f", "segment",
         "-segment_time", String(splitSec),
         "-reset_timestamps", "1",
@@ -418,7 +455,10 @@ async function splitMedia(file, splitSec, forceProWav = false) {
       { type: mime }
     );
 
-    const ext = name.endsWith(".wav") ? ".wav" : (name.endsWith(".mp3") ? ".mp3" : ".mp4");
+    const ext = name.endsWith(".wav")
+      ? ".wav"
+      : (name.endsWith(".mp3") ? ".mp3" : ".mp4");
+
     const niceName = `${base}_${String(i + 1).padStart(3, "0")}${ext}`;
 
     chunks.push({ name: niceName, blob });
@@ -431,6 +471,7 @@ async function splitMedia(file, splitSec, forceProWav = false) {
   bumpProgress(0.30);
   return chunks;
 }
+
 
 
 
