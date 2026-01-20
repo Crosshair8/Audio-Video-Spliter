@@ -306,7 +306,7 @@ async function docxFromLines(lines) {
 // =============================
 // Split media into chunks
 // =============================
-async function splitMedia(file, splitSec) {
+async function splitMedia(file, splitSec, forceProWav = false) {
   const ff = await getFFmpeg();
 
   const base = safeBaseName(file.name);
@@ -317,15 +317,33 @@ async function splitMedia(file, splitSec) {
   try { await ff.deleteFile(inputName); } catch {}
   await ff.writeFile(inputName, await fetchFile(file));
 
-  const pattern = isAudio ? "chunk_%03d.mp3" : "chunk_%03d.mp4";
+  // ✅ PRO MODE: output WAV (PCM 16-bit) chunks for max compatibility
+  const outputWav = forceProWav === true;
+
+  const pattern = outputWav
+    ? "chunk_%03d.wav"
+    : (isAudio ? "chunk_%03d.mp3" : "chunk_%03d.mp4");
 
   log(`File: ${file.name}`);
   log(`Split every: ${splitSec}s (${(splitSec / 60).toFixed(1)} min)`);
 
   bumpProgress(0.05);
 
-  if (isAudio) {
-    setStatus("Splitting audio...");
+  if (outputWav) {
+    setStatus("Splitting PRO audio as WAV (most compatible)...");
+    await ff.exec([
+      "-i", inputName,
+      "-vn",
+      "-ac", "1",
+      "-ar", "16000",
+      "-c:a", "pcm_s16le",
+      "-f", "segment",
+      "-segment_time", String(splitSec),
+      "-reset_timestamps", "1",
+      pattern
+    ]);
+  } else if (isAudio) {
+    setStatus("Splitting audio (MP3)...");
     await ff.exec([
       "-i", inputName,
       "-vn",
@@ -376,7 +394,10 @@ async function splitMedia(file, splitSec) {
   const dir = await ff.listDir(".");
   const names = dir
     .map((x) => x.name)
-    .filter((n) => n.startsWith("chunk_") && (n.endsWith(".mp3") || n.endsWith(".mp4")))
+    .filter((n) =>
+      n.startsWith("chunk_") &&
+      (n.endsWith(".mp3") || n.endsWith(".mp4") || n.endsWith(".wav"))
+    )
     .sort();
 
   if (!names.length) throw new Error("No chunks created (FFmpeg failed).");
@@ -386,10 +407,20 @@ async function splitMedia(file, splitSec) {
     const name = names[i];
     const data = await ff.readFile(name);
 
-    const mime = name.endsWith(".mp3") ? "audio/mpeg" : "video/mp4";
-    const blob = new Blob([data.buffer], { type: mime });
+    let mime = "application/octet-stream";
+    if (name.endsWith(".mp3")) mime = "audio/mpeg";
+    if (name.endsWith(".wav")) mime = "audio/wav";
+    if (name.endsWith(".mp4")) mime = "video/mp4";
 
-    const niceName = `${base}_${String(i + 1).padStart(3, "0")}${name.endsWith(".mp3") ? ".mp3" : ".mp4"}`;
+    // ✅ IMPORTANT: slice exact bytes
+    const blob = new Blob(
+      [data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)],
+      { type: mime }
+    );
+
+    const ext = name.endsWith(".wav") ? ".wav" : (name.endsWith(".mp3") ? ".mp3" : ".mp4");
+    const niceName = `${base}_${String(i + 1).padStart(3, "0")}${ext}`;
+
     chunks.push({ name: niceName, blob });
 
     try { await ff.deleteFile(name); } catch {}
@@ -400,6 +431,8 @@ async function splitMedia(file, splitSec) {
   bumpProgress(0.30);
   return chunks;
 }
+
+
 
 // =============================
 // SIMPLE transcription (chunk-by-chunk)
@@ -531,7 +564,20 @@ async function transcribeProChunks(chunks, apiKey) {
     await new Promise((r) => setTimeout(r, 0));
 
     const form = new FormData();
-    form.append("file", c.blob, c.name);
+
+
+// ✅ Make sure filename + mime match what we actually have
+const isWav = c.name.toLowerCase().endsWith(".wav");
+const isMp3 = c.name.toLowerCase().endsWith(".mp3");
+
+const mime = isWav ? "audio/wav" : isMp3 ? "audio/mpeg" : (c.blob.type || "application/octet-stream");
+
+// ✅ Wrap Blob into a real File (helps OpenAI accept it)
+const fileToSend = new File([c.blob], c.name, { type: mime });
+
+form.append("file", fileToSend, c.name);
+
+
 
     const res = await fetch(`${PROXY_URL}/transcribe`, {
       method: "POST",
@@ -604,7 +650,8 @@ startBtn.addEventListener("click", async () => {
     bumpProgress(0.01);
 
     // 1) Split
-    const chunks = await splitMedia(file, splitSec);
+    const chunks = await splitMedia(file, splitSec, mode === "pro");
+
     setStatus(`Created ${chunks.length} chunks ✅`);
     bumpProgress(0.30);
 
