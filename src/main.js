@@ -5,11 +5,8 @@ import { fetchFile, toBlobURL } from "@ffmpeg/util";
 
 // =============================
 // AI PRO CONFIG (Cloudflare Worker base URL)
-// Your code uses: `${PROXY_URL}/transcribe`
 // =============================
 const PROXY_URL = "https://lucjo.lucjosephgabrielsilva.workers.dev";
-
-// ✅ Link to buy / create OpenAI API key
 const OPENAI_KEY_BUY_LINK = "https://platform.openai.com/api-keys";
 
 // =============================
@@ -37,14 +34,13 @@ const statusEl = document.getElementById("status");
 const linksEl = document.getElementById("links");
 const logEl = document.getElementById("log");
 
-// ✅ Quality UI
-const mp3Quality = document.getElementById("mp3Quality");
-const wavQuality = document.getElementById("wavQuality");
-const mp3QualityRow = document.getElementById("mp3QualityRow");
-const wavQualityRow = document.getElementById("wavQualityRow");
+// ✅ ONE quality dropdown
+const qualityLabel = document.getElementById("qualityLabel");
+const qualitySelect = document.getElementById("qualitySelect");
+const qualityHint = document.getElementById("qualityHint");
 
 // =============================
-// Progress (MONOTONIC - never goes backwards)
+// Progress (MONOTONIC)
 // =============================
 let progressValue = 0;
 function resetProgress() {
@@ -59,7 +55,7 @@ function bumpProgress(v) {
 }
 
 // =============================
-// Helpers UI
+// UI helpers
 // =============================
 function log(msg) {
   logEl.textContent += msg + "\n";
@@ -117,41 +113,63 @@ splitSize.addEventListener("change", () => {
 });
 
 // =============================
-// Auto quality UI logic
-// SIMPLE+BEST => MP3 kbps
-// PRO => WAV quality
+// Quality options (ONE dropdown)
 // =============================
+
+// MP3 presets for SIMPLE + BEST
+const MP3_QUALITY_OPTIONS = [
+  { value: "96", label: "Low (96 kbps)" },
+  { value: "128", label: "Normal (128 kbps)" },
+  { value: "192", label: "High (192 kbps)" },
+  { value: "256", label: "Very High (256 kbps)" },
+  { value: "320", label: "Best (320 kbps)" },
+];
+
+// WAV presets for PRO
+const WAV_QUALITY_OPTIONS = [
+  { value: "fast", label: "Fast (16kHz mono WAV)" },
+  { value: "good", label: "Good (24kHz mono WAV)" },
+  { value: "best", label: "Best (48kHz mono WAV)" },
+  { value: "orig", label: "Original-ish (48kHz stereo WAV)" },
+];
+
+function setQualityDropdown(options, defaultValue, labelText) {
+  // Save current selection if it exists and is valid in new options
+  const current = qualitySelect.value;
+
+  qualitySelect.innerHTML = "";
+  for (const opt of options) {
+    const o = document.createElement("option");
+    o.value = opt.value;
+    o.textContent = opt.label;
+    qualitySelect.appendChild(o);
+  }
+
+  qualityLabel.textContent = labelText;
+
+  const validCurrent = options.some((x) => x.value === current);
+  qualitySelect.value = validCurrent ? current : defaultValue;
+}
+
+// ✅ This updates the ONE dropdown based on mode
 function autoAdjustQualityUI() {
   const mode = modeSelect.value;
-  const f = fileInput.files?.[0];
-  const isVideo = f?.type?.startsWith("video/");
 
-  // PRO => WAV only
   if (mode === "pro") {
-    if (mp3QualityRow) mp3QualityRow.style.display = "none";
-    if (wavQualityRow) wavQualityRow.style.display = "";
-
-    // ✅ pro default = best wav
-    if (wavQuality) wavQuality.value = wavQuality.value || "best";
-    return;
-  }
-
-  // SIMPLE/BEST => MP3 only
-  if (mp3QualityRow) mp3QualityRow.style.display = "";
-  if (wavQualityRow) wavQualityRow.style.display = "none";
-
-  // ✅ defaults
-  if (mode === "simple") {
-    if (mp3Quality) mp3Quality.value = mp3Quality.value || "192";
-  } else if (mode === "best") {
-    // best default for audio is higher
-    if (mp3Quality) mp3Quality.value = mp3Quality.value || "256";
-  }
-
-  // If BEST + video, mp3 setting doesn't affect mp4 copy splitting,
-  // but leaving it visible is fine (still SIMPLE/BEST = MP3 setting)
-  if (mode === "best" && isVideo) {
-    if (mp3Quality) mp3Quality.value = mp3Quality.value || "192";
+    // WAV dropdown
+    setQualityDropdown(
+      WAV_QUALITY_OPTIONS,
+      "best",
+      "WAV Quality (AI PRO)"
+    );
+  } else {
+    // MP3 dropdown (simple + best)
+    const def = mode === "best" ? "256" : "192";
+    setQualityDropdown(
+      MP3_QUALITY_OPTIONS,
+      def,
+      "MP3 Quality (SIMPLE + BEST)"
+    );
   }
 }
 
@@ -208,8 +226,6 @@ fileInput.addEventListener("change", () => {
     : isVideo
       ? `Detected: VIDEO ✅ (${f.type || "unknown"})`
       : `Unknown (${f.type || "unknown"})`;
-
-  autoAdjustQualityUI();
 });
 
 // =============================
@@ -301,7 +317,7 @@ function workerRequest(worker, type, data, rangeStart = 0, rangeEnd = 1) {
   });
 }
 
-// ✅ BEST MODE: ALWAYS USE WASM (no WebGPU errors ever)
+// ✅ BEST MODE: ALWAYS USE WASM
 async function bestLoadWasm(worker) {
   setStatus("BEST: loading models (WASM, safe)...");
   await workerRequest(worker, "load", { device: "wasm" }, 0.30, 0.36);
@@ -309,7 +325,7 @@ async function bestLoadWasm(worker) {
 }
 
 // =============================
-// Extract 16k mono Float32 from a blob (per chunk)
+// Extract 16k mono Float32 from a blob
 // =============================
 async function extract16kFloat32FromBlob(blob, hintName = "input") {
   const ff = await getFFmpeg();
@@ -354,28 +370,22 @@ async function docxFromLines(lines) {
 }
 
 // =============================
-// WAV presets for AI PRO quality
+// WAV preset decode
 // =============================
 function getWavPreset(preset) {
   switch (preset) {
-    case "fast":
-      return { ar: 16000, ac: 1 };
-    case "good":
-      return { ar: 24000, ac: 1 };
-    case "best":
-      return { ar: 48000, ac: 1 };
-    case "orig":
-      return { ar: 48000, ac: 2 };
-    default:
-      return { ar: 48000, ac: 1 };
+    case "fast": return { ar: 16000, ac: 1 };
+    case "good": return { ar: 24000, ac: 1 };
+    case "best": return { ar: 48000, ac: 1 };
+    case "orig": return { ar: 48000, ac: 2 };
+    default: return { ar: 48000, ac: 1 };
   }
 }
 
 // =============================
 // Split media into chunks
-// SIMPLE/BEST (audio) -> MP3 with kbps
-// AI PRO -> WAV with quality presets
-// Video -> MP4 split
+// SIMPLE/BEST audio => MP3 kbps from ONE dropdown
+// PRO => WAV from ONE dropdown
 // =============================
 async function splitMedia(file, splitSec, forceProWav = false) {
   const ff = await getFFmpeg();
@@ -400,8 +410,7 @@ async function splitMedia(file, splitSec, forceProWav = false) {
   bumpProgress(0.05);
 
   if (outputWav) {
-    const preset = getWavPreset(wavQuality?.value || "best");
-
+    const preset = getWavPreset(qualitySelect.value || "best");
     setStatus("Splitting PRO audio as WAV (quality selectable)...");
     await ff.exec([
       "-i", inputName,
@@ -415,20 +424,15 @@ async function splitMedia(file, splitSec, forceProWav = false) {
       pattern
     ]);
   } else if (isAudio) {
-    const kbps = Number(mp3Quality?.value || 192);
-
+    const kbps = Number(qualitySelect.value || 192);
     setStatus("Splitting audio (MP3 quality selectable)...");
     await ff.exec([
       "-i", inputName,
       "-vn",
-
-      // closer to original listening quality
       "-ac", "2",
       "-ar", "44100",
-
       "-c:a", "libmp3lame",
       "-b:a", `${kbps}k`,
-
       "-f", "segment",
       "-segment_time", String(splitSec),
       "-reset_timestamps", "1",
@@ -512,7 +516,7 @@ async function splitMedia(file, splitSec, forceProWav = false) {
 }
 
 // =============================
-// SIMPLE transcription (chunk-by-chunk)
+// SIMPLE transcription
 // =============================
 async function transcribeSimpleChunks(chunks) {
   const worker = getSimpleWorker();
@@ -524,13 +528,11 @@ async function transcribeSimpleChunks(chunks) {
 
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i];
-
     const chunkStart = transcribeStart + i * perChunk;
     const chunkEnd = chunkStart + perChunk;
 
     setStatus(`SIMPLE: transcribing chunk ${i + 1}/${chunks.length}...`);
     bumpProgress(chunkStart);
-
     await new Promise((r) => setTimeout(r, 0));
 
     const audio16k = await extract16kFloat32FromBlob(c.blob, `simple_${i}`);
@@ -546,7 +548,7 @@ async function transcribeSimpleChunks(chunks) {
 }
 
 // =============================
-// BEST transcription (WASM only)
+// BEST transcription
 // =============================
 async function transcribeBestChunks(chunks) {
   const worker = getBestWorker();
@@ -560,13 +562,11 @@ async function transcribeBestChunks(chunks) {
 
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i];
-
     const chunkStart = transcribeStart + i * perChunk;
     const chunkEnd = chunkStart + perChunk;
 
     setStatus(`BEST: diarizing chunk ${i + 1}/${chunks.length}...`);
     bumpProgress(chunkStart);
-
     await new Promise((r) => setTimeout(r, 0));
 
     const audio16k = await extract16kFloat32FromBlob(c.blob, `best_${i}`);
@@ -588,20 +588,14 @@ async function transcribeBestChunks(chunks) {
         if (!word?.timestamp) continue;
 
         const end = word.timestamp[1];
-        if (end <= seg.end) {
-          segmentWords.push(word.text);
-        } else {
-          prev = w;
-          break;
-        }
+        if (end <= seg.end) segmentWords.push(word.text);
+        else { prev = w; break; }
       }
 
       const joined = segmentWords.join("").trim();
       if (!joined) continue;
 
-      allLines.push(
-        `${seg.label} (${secondsToHMS(seg.start)} → ${secondsToHMS(seg.end)}): ${joined}`
-      );
+      allLines.push(`${seg.label} (${secondsToHMS(seg.start)} → ${secondsToHMS(seg.end)}): ${joined}`);
     }
 
     allLines.push("");
@@ -612,7 +606,7 @@ async function transcribeBestChunks(chunks) {
 }
 
 // =============================
-// AI PRO transcription (chunk-by-chunk)
+// AI PRO transcription
 // =============================
 async function transcribeProChunks(chunks, apiKey) {
   if (!PROXY_URL || PROXY_URL.includes("YOUR-WORKER")) {
@@ -630,18 +624,15 @@ async function transcribeProChunks(chunks, apiKey) {
 
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i];
-
     const chunkStart = transcribeStart + i * perChunk;
     const chunkEnd = chunkStart + perChunk;
 
     setStatus(`AI PRO: transcribing chunk ${i + 1}/${chunks.length}...`);
     bumpProgress(chunkStart);
-
     await new Promise((r) => setTimeout(r, 0));
 
     const form = new FormData();
 
-    // ✅ Wrap Blob into a real File with correct mime
     const lower = c.name.toLowerCase();
     const mime =
       lower.endsWith(".wav") ? "audio/wav" :
@@ -661,21 +652,12 @@ async function transcribeProChunks(chunks, apiKey) {
     if (!res.ok) throw new Error(`AI PRO failed (${res.status}): ${text}`);
 
     let json = null;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      json = { text };
-    }
+    try { json = JSON.parse(text); } catch { json = { text }; }
 
     allLines.push(`Part ${String(i + 1).padStart(3, "0")}: ${c.name}`);
     allLines.push("");
 
-    const segs =
-      json?.segments ||
-      json?.diarization?.segments ||
-      json?.results?.segments ||
-      [];
-
+    const segs = json?.segments || json?.diarization?.segments || json?.results?.segments || [];
     if (Array.isArray(segs) && segs.length) {
       for (const s of segs) {
         const who = s.speaker || s.label || "Speaker ?";
@@ -720,19 +702,16 @@ startBtn.addEventListener("click", async () => {
     setStatus("Starting...");
     bumpProgress(0.01);
 
-    // 1) Split
     const chunks = await splitMedia(file, splitSec, mode === "pro");
     setStatus(`Created ${chunks.length} chunks ✅`);
     bumpProgress(0.30);
 
     for (const c of chunks) addDownloadLink(c.blob, c.name);
 
-    // Show OpenAI key link only in PRO mode
     if (mode === "pro") {
       addInfoLink(OPENAI_KEY_BUY_LINK, "🔑 Get / manage OpenAI API key");
     }
 
-    // 2) Transcribe
     let transcriptLines = null;
 
     if (mode === "simple") {
@@ -747,7 +726,6 @@ startBtn.addEventListener("click", async () => {
       transcriptLines = await transcribeProChunks(chunks, key);
     }
 
-    // 3) Transcript docx
     let transcriptDocx = null;
     if (transcriptLines) {
       setStatus("Building transcript.docx...");
@@ -756,7 +734,6 @@ startBtn.addEventListener("click", async () => {
       addDownloadLink(transcriptDocx, `${base}_transcript.docx`);
     }
 
-    // 4) ZIP
     setStatus("Building ZIP...");
     bumpProgress(0.95);
 
@@ -790,5 +767,5 @@ startBtn.addEventListener("click", async () => {
   }
 });
 
-// ✅ run once on load
+// ✅ Init once
 autoAdjustQualityUI();
