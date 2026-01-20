@@ -9,6 +9,8 @@ import { fetchFile, toBlobURL } from "@ffmpeg/util";
 // =============================
 const PROXY_URL = "https://lucjo.lucjosephgabrielsilva.workers.dev";
 
+// ✅ Link to buy / create OpenAI API key
+const OPENAI_KEY_BUY_LINK = "https://platform.openai.com/api-keys";
 
 // =============================
 // DOM
@@ -72,6 +74,16 @@ function addDownloadLink(blob, filename) {
   a.textContent = `⬇ ${filename}`;
   linksEl.appendChild(a);
   return { url, filename };
+}
+function addInfoLink(url, label) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.textContent = label;
+  a.style.display = "block";
+  a.style.marginTop = "8px";
+  linksEl.appendChild(a);
 }
 function safeBaseName(name) {
   const base = name.replace(/\.[^/.]+$/, "");
@@ -412,14 +424,7 @@ async function transcribeSimpleChunks(chunks) {
     await new Promise((r) => setTimeout(r, 0));
 
     const audio16k = await extract16kFloat32FromBlob(c.blob, `simple_${i}`);
-    const res = await workerRequest(
-  worker,
-  "run",
-  { audio: audio16k, sampling_rate: 16000 },
-  chunkStart,
-  chunkEnd
-);
-
+    const res = await workerRequest(worker, "run", { audio: audio16k }, chunkStart, chunkEnd);
 
     allLines.push(`Part ${String(i + 1).padStart(3, "0")}: ${c.name}`);
     allLines.push((res?.text || "").trim() || "(no text)");
@@ -435,8 +440,6 @@ async function transcribeSimpleChunks(chunks) {
 // =============================
 async function transcribeBestChunks(chunks) {
   const worker = getBestWorker();
-
-  // ✅ ALWAYS WASM, no WebGPU attempt
   await bestLoadWasm(worker);
 
   const allLines = [];
@@ -457,14 +460,7 @@ async function transcribeBestChunks(chunks) {
     await new Promise((r) => setTimeout(r, 0));
 
     const audio16k = await extract16kFloat32FromBlob(c.blob, `best_${i}`);
-    const bestRes = await workerRequest(
-  worker,
-  "run",
-  { audio: audio16k, sampling_rate: 16000 },
-  chunkStart,
-  chunkEnd
-);
-
+    const bestRes = await workerRequest(worker, "run", { audio: audio16k }, chunkStart, chunkEnd);
 
     const segments = bestRes?.segments || [];
     const words = bestRes?.transcript?.chunks || [];
@@ -493,7 +489,9 @@ async function transcribeBestChunks(chunks) {
       const joined = segmentWords.join("").trim();
       if (!joined) continue;
 
-      allLines.push(`${seg.label} (${secondsToHMS(seg.start)} → ${secondsToHMS(seg.end)}): ${joined}`);
+      allLines.push(
+        `${seg.label} (${secondsToHMS(seg.start)} → ${secondsToHMS(seg.end)}): ${joined}`
+      );
     }
 
     allLines.push("");
@@ -505,6 +503,7 @@ async function transcribeBestChunks(chunks) {
 
 // =============================
 // AI PRO transcription (chunk-by-chunk)
+// ✅ Supports speakers if proxy uses gpt-4o-transcribe-diarize
 // =============================
 async function transcribeProChunks(chunks, apiKey) {
   if (!PROXY_URL || PROXY_URL.includes("YOUR-WORKER")) {
@@ -544,15 +543,26 @@ async function transcribeProChunks(chunks, apiKey) {
     if (!res.ok) throw new Error(`AI PRO failed (${res.status}): ${text}`);
 
     let json = null;
-    try { json = JSON.parse(text); } catch { json = { text }; }
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { text };
+    }
 
     allLines.push(`Part ${String(i + 1).padStart(3, "0")}: ${c.name}`);
     allLines.push("");
 
-    if (json?.segments?.length) {
-      for (const s of json.segments) {
-        const who = s.speaker || "Speaker ?";
-        const t = (s.text || "").trim();
+    // ✅ diarize models can return segments in different shapes
+    const segs =
+      json?.segments ||
+      json?.diarization?.segments ||
+      json?.results?.segments ||
+      [];
+
+    if (Array.isArray(segs) && segs.length) {
+      for (const s of segs) {
+        const who = s.speaker || s.label || "Speaker ?";
+        const t = (s.text || s.transcript || "").trim();
         if (t) allLines.push(`${who}: ${t}`);
       }
     } else {
@@ -599,6 +609,11 @@ startBtn.addEventListener("click", async () => {
     bumpProgress(0.30);
 
     for (const c of chunks) addDownloadLink(c.blob, c.name);
+
+    // Show OpenAI key link only in PRO mode
+    if (mode === "pro") {
+      addInfoLink(OPENAI_KEY_BUY_LINK, "🔑 Get / manage OpenAI API key");
+    }
 
     // 2) Transcribe
     let transcriptLines = null;
