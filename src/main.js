@@ -37,9 +37,11 @@ const statusEl = document.getElementById("status");
 const linksEl = document.getElementById("links");
 const logEl = document.getElementById("log");
 
-const wavQuality = document.getElementById("wavQuality");
+// ✅ Quality UI
 const mp3Quality = document.getElementById("mp3Quality");
-
+const wavQuality = document.getElementById("wavQuality");
+const mp3QualityRow = document.getElementById("mp3QualityRow");
+const wavQualityRow = document.getElementById("wavQualityRow");
 
 // =============================
 // Progress (MONOTONIC - never goes backwards)
@@ -115,10 +117,50 @@ splitSize.addEventListener("change", () => {
 });
 
 // =============================
+// Auto quality UI logic
+// SIMPLE+BEST => MP3 kbps
+// PRO => WAV quality
+// =============================
+function autoAdjustQualityUI() {
+  const mode = modeSelect.value;
+  const f = fileInput.files?.[0];
+  const isVideo = f?.type?.startsWith("video/");
+
+  // PRO => WAV only
+  if (mode === "pro") {
+    if (mp3QualityRow) mp3QualityRow.style.display = "none";
+    if (wavQualityRow) wavQualityRow.style.display = "";
+
+    // ✅ pro default = best wav
+    if (wavQuality) wavQuality.value = wavQuality.value || "best";
+    return;
+  }
+
+  // SIMPLE/BEST => MP3 only
+  if (mp3QualityRow) mp3QualityRow.style.display = "";
+  if (wavQualityRow) wavQualityRow.style.display = "none";
+
+  // ✅ defaults
+  if (mode === "simple") {
+    if (mp3Quality) mp3Quality.value = mp3Quality.value || "192";
+  } else if (mode === "best") {
+    // best default for audio is higher
+    if (mp3Quality) mp3Quality.value = mp3Quality.value || "256";
+  }
+
+  // If BEST + video, mp3 setting doesn't affect mp4 copy splitting,
+  // but leaving it visible is fine (still SIMPLE/BEST = MP3 setting)
+  if (mode === "best" && isVideo) {
+    if (mp3Quality) mp3Quality.value = mp3Quality.value || "192";
+  }
+}
+
+// =============================
 // Mode UI
 // =============================
 modeSelect.addEventListener("change", () => {
   proBox.style.display = modeSelect.value === "pro" ? "" : "none";
+  autoAdjustQualityUI();
 });
 
 // =============================
@@ -157,13 +199,17 @@ clearKeyBtn.addEventListener("click", () => {
 fileInput.addEventListener("change", () => {
   const f = fileInput.files?.[0];
   if (!f) return;
+
   const isAudio = f.type.startsWith("audio/");
   const isVideo = f.type.startsWith("video/");
+
   detectedType.textContent = isAudio
     ? `Detected: AUDIO ✅ (${f.type || "unknown"})`
     : isVideo
       ? `Detected: VIDEO ✅ (${f.type || "unknown"})`
       : `Unknown (${f.type || "unknown"})`;
+
+  autoAdjustQualityUI();
 });
 
 // =============================
@@ -307,37 +353,29 @@ async function docxFromLines(lines) {
   return await Packer.toBlob(doc);
 }
 
+// =============================
+// WAV presets for AI PRO quality
+// =============================
 function getWavPreset(preset) {
-  // AI PRO WAV quality presets
   switch (preset) {
     case "fast":
-      return { ar: 16000, ac: 1 }; // smallest, fastest
+      return { ar: 16000, ac: 1 };
     case "good":
       return { ar: 24000, ac: 1 };
     case "best":
-      return { ar: 48000, ac: 1 }; // best voice detail, still mono
+      return { ar: 48000, ac: 1 };
     case "orig":
-      return { ar: 48000, ac: 2 }; // closest to original audio (biggest)
+      return { ar: 48000, ac: 2 };
     default:
-      return { ar: 16000, ac: 1 };
+      return { ar: 48000, ac: 1 };
   }
 }
 
-function getMp3Preset(kbps) {
-  const rate = Number(kbps);
-  // SIMPLE MP3 presets (bitrate only, keep safe/compatible)
-  return {
-    bitrate: Number.isFinite(rate) ? rate : 128,
-    ar: 44100, // better quality than 16k
-    ac: 2,     // stereo for closer-to-original
-  };
-}
-
-
-
-
 // =============================
 // Split media into chunks
+// SIMPLE/BEST (audio) -> MP3 with kbps
+// AI PRO -> WAV with quality presets
+// Video -> MP4 split
 // =============================
 async function splitMedia(file, splitSec, forceProWav = false) {
   const ff = await getFFmpeg();
@@ -350,7 +388,6 @@ async function splitMedia(file, splitSec, forceProWav = false) {
   try { await ff.deleteFile(inputName); } catch {}
   await ff.writeFile(inputName, await fetchFile(file));
 
-  // ✅ PRO MODE: output WAV chunks for max compatibility
   const outputWav = forceProWav === true;
 
   const pattern = outputWav
@@ -362,17 +399,15 @@ async function splitMedia(file, splitSec, forceProWav = false) {
 
   bumpProgress(0.05);
 
-  // ✅ Grab quality settings
-  const wavPreset = getWavPreset(wavQuality?.value || "fast");
-  const mp3Preset = getMp3Preset(mp3Quality?.value || "128");
-
   if (outputWav) {
+    const preset = getWavPreset(wavQuality?.value || "best");
+
     setStatus("Splitting PRO audio as WAV (quality selectable)...");
     await ff.exec([
       "-i", inputName,
       "-vn",
-      "-ac", String(wavPreset.ac),
-      "-ar", String(wavPreset.ar),
+      "-ac", String(preset.ac),
+      "-ar", String(preset.ar),
       "-c:a", "pcm_s16le",
       "-f", "segment",
       "-segment_time", String(splitSec),
@@ -380,14 +415,20 @@ async function splitMedia(file, splitSec, forceProWav = false) {
       pattern
     ]);
   } else if (isAudio) {
+    const kbps = Number(mp3Quality?.value || 192);
+
     setStatus("Splitting audio (MP3 quality selectable)...");
     await ff.exec([
       "-i", inputName,
       "-vn",
-      "-ac", String(mp3Preset.ac),
-      "-ar", String(mp3Preset.ar),
+
+      // closer to original listening quality
+      "-ac", "2",
+      "-ar", "44100",
+
       "-c:a", "libmp3lame",
-      "-b:a", `${mp3Preset.bitrate}k`,
+      "-b:a", `${kbps}k`,
+
       "-f", "segment",
       "-segment_time", String(splitSec),
       "-reset_timestamps", "1",
@@ -449,7 +490,6 @@ async function splitMedia(file, splitSec, forceProWav = false) {
     if (name.endsWith(".wav")) mime = "audio/wav";
     if (name.endsWith(".mp4")) mime = "video/mp4";
 
-    // ✅ IMPORTANT: slice exact bytes
     const blob = new Blob(
       [data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)],
       { type: mime }
@@ -460,7 +500,6 @@ async function splitMedia(file, splitSec, forceProWav = false) {
       : (name.endsWith(".mp3") ? ".mp3" : ".mp4");
 
     const niceName = `${base}_${String(i + 1).padStart(3, "0")}${ext}`;
-
     chunks.push({ name: niceName, blob });
 
     try { await ff.deleteFile(name); } catch {}
@@ -471,9 +510,6 @@ async function splitMedia(file, splitSec, forceProWav = false) {
   bumpProgress(0.30);
   return chunks;
 }
-
-
-
 
 // =============================
 // SIMPLE transcription (chunk-by-chunk)
@@ -577,7 +613,6 @@ async function transcribeBestChunks(chunks) {
 
 // =============================
 // AI PRO transcription (chunk-by-chunk)
-// ✅ Supports speakers if proxy uses gpt-4o-transcribe-diarize
 // =============================
 async function transcribeProChunks(chunks, apiKey) {
   if (!PROXY_URL || PROXY_URL.includes("YOUR-WORKER")) {
@@ -606,19 +641,15 @@ async function transcribeProChunks(chunks, apiKey) {
 
     const form = new FormData();
 
+    // ✅ Wrap Blob into a real File with correct mime
+    const lower = c.name.toLowerCase();
+    const mime =
+      lower.endsWith(".wav") ? "audio/wav" :
+      lower.endsWith(".mp3") ? "audio/mpeg" :
+      (c.blob.type || "application/octet-stream");
 
-// ✅ Make sure filename + mime match what we actually have
-const isWav = c.name.toLowerCase().endsWith(".wav");
-const isMp3 = c.name.toLowerCase().endsWith(".mp3");
-
-const mime = isWav ? "audio/wav" : isMp3 ? "audio/mpeg" : (c.blob.type || "application/octet-stream");
-
-// ✅ Wrap Blob into a real File (helps OpenAI accept it)
-const fileToSend = new File([c.blob], c.name, { type: mime });
-
-form.append("file", fileToSend, c.name);
-
-
+    const fileToSend = new File([c.blob], c.name, { type: mime });
+    form.append("file", fileToSend, c.name);
 
     const res = await fetch(`${PROXY_URL}/transcribe`, {
       method: "POST",
@@ -639,7 +670,6 @@ form.append("file", fileToSend, c.name);
     allLines.push(`Part ${String(i + 1).padStart(3, "0")}: ${c.name}`);
     allLines.push("");
 
-    // ✅ diarize models can return segments in different shapes
     const segs =
       json?.segments ||
       json?.diarization?.segments ||
@@ -692,7 +722,6 @@ startBtn.addEventListener("click", async () => {
 
     // 1) Split
     const chunks = await splitMedia(file, splitSec, mode === "pro");
-
     setStatus(`Created ${chunks.length} chunks ✅`);
     bumpProgress(0.30);
 
@@ -760,3 +789,6 @@ startBtn.addEventListener("click", async () => {
     startBtn.disabled = false;
   }
 });
+
+// ✅ run once on load
+autoAdjustQualityUI();
