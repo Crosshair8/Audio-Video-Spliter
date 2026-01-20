@@ -7,7 +7,8 @@ import { fetchFile, toBlobURL } from "@ffmpeg/util";
 // AI PRO CONFIG (Cloudflare Worker base URL)
 // Your code uses: `${PROXY_URL}/transcribe`
 // =============================
-const PROXY_URL = "https://YOUR-WORKER.workers.dev";
+const PROXY_URL = "https://lucjo.lucjosephgabrielsilva.workers.dev";
+
 
 // =============================
 // DOM
