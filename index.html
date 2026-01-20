@@ -48,13 +48,17 @@
         border-radius: 12px;
         margin-top: 10px;
       }
+      .prolinks a {
+        display: inline-block;
+        margin-right: 12px;
+      }
     </style>
   </head>
 
   <body>
     <h1>Audio / Video Splitter</h1>
     <div class="small">
-      Split big audio/video into chunks, download all as ZIP, and optionally auto-transcribe.
+      Split big audio/video into chunks, download all as ZIP, and optionally transcribe.
     </div>
 
     <!-- File input -->
@@ -91,18 +95,16 @@
 
       <select id="transcribeMode">
         <option value="none" selected>OFF (just split + ZIP)</option>
-        <option value="simple">SIMPLE Local Transcript (no speakers, no API)</option>
-        <option value="best">BEST Website Diarization (speakers + timestamps, heavy)</option>
-        <option value="pro">AI PRO (GPT) — Best quality (Bring Your Own Key)</option>
+        <option value="simple">SIMPLE (fast transcript, no speakers)</option>
+        <option value="best">BEST WEBSITE (speakers + timestamps, heavier)</option>
+        <option value="pro">AI PRO (GPT) — best quality (Bring Your Own Key)</option>
       </select>
 
-      <div class="small">
-        SIMPLE + BEST run in your browser. PRO uses OpenAI (you paste your own key).
-      </div>
-
       <div class="warn small">
-        <b>Note:</b> BEST mode downloads large AI models and can be slow on weak PCs.
-        Chrome is recommended.
+        <b>Speed:</b><br/>
+        ✅ SIMPLE = fastest<br/>
+        ✅ BEST = speaker labels (heavier)<br/>
+        ✅ AI PRO = best quality (needs API key)
       </div>
     </div>
 
@@ -124,7 +126,21 @@
         <button id="clearKey" type="button">Clear saved key</button>
       </div>
 
-      <div class="small">
+      <div class="small prolinks" style="margin-top:8px;">
+        <a
+          href="https://platform.openai.com/settings/organization/api-keys"
+          target="_blank"
+          rel="noopener noreferrer"
+        >Get an OpenAI API Key</a>
+
+        <a
+          href="https://platform.openai.com/settings/organization/billing/overview"
+          target="_blank"
+          rel="noopener noreferrer"
+        >Add billing / credits</a>
+      </div>
+
+      <div class="small" style="margin-top:6px;">
         Your key is stored only in your browser storage (if enabled).
       </div>
     </div>

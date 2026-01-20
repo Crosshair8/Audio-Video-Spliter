@@ -2,38 +2,31 @@ import {
   pipeline,
   AutoProcessor,
   AutoModelForAudioFrameClassification,
-} from "@xenova/transformers";
+} from "@huggingface/transformers";
 
-// BEST mode: whisper + pyannote segmentation (in-browser)
-const PER_DEVICE_CONFIG = {
-  webgpu: {
-    dtype: { encoder_model: "fp32", decoder_model_merged: "q4" },
-    device: "webgpu",
-  },
-  wasm: {
-    dtype: "q8",
-    device: "wasm",
-  },
-};
-
+// ✅ BEST WEBSITE = diarization + timestamps
+// ✅ WASM ONLY (no WebGPU requirement)
 class PipelineSingleton {
-  static asr_model_id = "onnx-community/whisper-base_timestamped";
+  static asr_model_id = "Xenova/whisper-tiny.en";
   static segmentation_model_id = "onnx-community/pyannote-segmentation-3.0";
+
   static asr_instance = null;
   static segmentation_instance = null;
   static segmentation_processor = null;
 
-  static async getInstance(progress_callback = null, device = "webgpu") {
+  static async getInstance(progress_callback = null) {
+    // ASR (WASM)
     this.asr_instance ??= pipeline("automatic-speech-recognition", this.asr_model_id, {
-      ...PER_DEVICE_CONFIG[device],
+      device: "wasm",
+      dtype: "q8",
       progress_callback,
     });
 
+    // Diarization (WASM)
     this.segmentation_processor ??= AutoProcessor.from_pretrained(this.segmentation_model_id, {
       progress_callback,
     });
 
-    // segmentation runs on wasm
     this.segmentation_instance ??= AutoModelForAudioFrameClassification.from_pretrained(
       this.segmentation_model_id,
       {
@@ -51,11 +44,20 @@ class PipelineSingleton {
   }
 }
 
-async function segment(processor, model, audio) {
-  const inputs = await processor(audio);
+function normalizeToF32(input) {
+  if (!input) return new Float32Array();
+  if (input instanceof Float32Array) return input;
+  if (input instanceof ArrayBuffer) return new Float32Array(input);
+  if (ArrayBuffer.isView(input)) return new Float32Array(input.buffer);
+  if (Array.isArray(input)) return Float32Array.from(input);
+  return new Float32Array();
+}
+
+async function segment(processor, model, audioF32) {
+  const inputs = await processor(audioF32);
   const { logits } = await model(inputs);
 
-  const segments = processor.post_process_speaker_diarization(logits, audio.length)[0];
+  const segments = processor.post_process_speaker_diarization(logits, audioF32.length)[0];
 
   for (const seg of segments) {
     seg.label = model.config.id2label[seg.id];
@@ -72,47 +74,49 @@ self.onmessage = async (e) => {
 
   try {
     if (type === "load") {
-      const device = data?.device || "webgpu";
-
-      sendProgress(0.02, `Loading BEST models (${device})...`);
-      const [transcriber] = await PipelineSingleton.getInstance((x) => {
+      sendProgress(0.02, "BEST: loading models (WASM safe mode)...");
+      await PipelineSingleton.getInstance((x) => {
         if (x?.status === "progress") {
           sendProgress(0.02 + (x.progress ?? 0) * 0.25, x.data ?? "Loading...");
         }
-      }, device);
+      });
 
-      if (device === "webgpu") {
-        sendProgress(0.35, "Warming up WebGPU model...");
-        await transcriber(new Float32Array(16000), { language: "en" });
-      }
-
-      self.postMessage({ id, status: "complete", result: { ok: true } });
+      self.postMessage({ id, status: "complete", result: { ok: true, device: "wasm" } });
       return;
     }
 
     if (type === "run") {
-      const audio = data.audio;
-      const language = data.language || "en";
+      const audioF32 = normalizeToF32(data?.audio);
 
-      sendProgress(0.05, "Running Whisper + diarization...");
+      // ✅ prevent crashes on silent/empty chunks
+      if (!audioF32 || audioF32.length < 1000) {
+        sendProgress(1, "BEST: skipped (no audio detected)");
+        self.postMessage({
+          id,
+          status: "complete",
+          result: { transcript: { text: "", chunks: [] }, segments: [] },
+        });
+        return;
+      }
+
+      sendProgress(0.05, "BEST: transcribing + diarizing (WASM)...");
 
       const [transcriber, segmentation_processor, segmentation_model] =
         await PipelineSingleton.getInstance();
 
+      // ✅ PASS Float32Array DIRECTLY (fixes subarray error)
       const [transcript, segments] = await Promise.all([
-        transcriber(audio, {
-          language,
+        transcriber(audioF32, {
           return_timestamps: "word",
-          chunk_length_s: 30,
+          chunk_length_s: 20,
+          stride_length_s: 5,
+          condition_on_previous_text: false,
+          repetition_penalty: 1.05,
         }),
-        segment(segmentation_processor, segmentation_model, audio),
+        segment(segmentation_processor, segmentation_model, audioF32),
       ]);
 
-      self.postMessage({
-        id,
-        status: "complete",
-        result: { transcript, segments },
-      });
+      self.postMessage({ id, status: "complete", result: { transcript, segments } });
       return;
     }
 

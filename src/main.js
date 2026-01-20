@@ -1,13 +1,13 @@
 import JSZip from "jszip";
 import { Document, Packer, Paragraph, TextRun } from "docx";
 import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
+import { fetchFile, toBlobURL } from "@ffmpeg/util";
 
 // =============================
-// CONFIG (AI PRO)
+// AI PRO CONFIG (Cloudflare Worker base URL)
+// Your code uses: `${PROXY_URL}/transcribe`
 // =============================
-// Put your Cloudflare worker URL here:
-const PROXY_URL = "https://YOUR-WORKER.workers.dev/transcribe";
+const PROXY_URL = "https://YOUR-WORKER.workers.dev";
 
 // =============================
 // DOM
@@ -35,27 +35,34 @@ const linksEl = document.getElementById("links");
 const logEl = document.getElementById("log");
 
 // =============================
+// Progress (MONOTONIC - never goes backwards)
+// =============================
+let progressValue = 0;
+function resetProgress() {
+  progressValue = 0;
+  progress.value = 0;
+}
+function bumpProgress(v) {
+  if (!Number.isFinite(v)) return;
+  if (v < progressValue) return;
+  progressValue = Math.min(1, v);
+  progress.value = progressValue;
+}
+
+// =============================
 // Helpers UI
 // =============================
 function log(msg) {
-  console.log(msg);
   logEl.textContent += msg + "\n";
   logEl.scrollTop = logEl.scrollHeight;
 }
-
 function setStatus(msg) {
   statusEl.textContent = msg;
 }
-
-function setProgress(v) {
-  progress.value = Math.max(0, Math.min(1, v));
-}
-
 function clearOutputs() {
   linksEl.innerHTML = "";
   zipBtn.style.display = "none";
 }
-
 function addDownloadLink(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -65,7 +72,10 @@ function addDownloadLink(blob, filename) {
   linksEl.appendChild(a);
   return { url, filename };
 }
-
+function safeBaseName(name) {
+  const base = name.replace(/\.[^/.]+$/, "");
+  return base.replace(/[^a-zA-Z0-9-_]+/g, "_").slice(0, 60) || "file";
+}
 function secondsToHMS(s) {
   s = Math.max(0, s);
   const h = Math.floor(s / 3600);
@@ -99,32 +109,23 @@ modeSelect.addEventListener("change", () => {
 // =============================
 (function loadSavedKey() {
   try {
-    const saved = localStorage.getItem("avs_api_key");
+    const saved = localStorage.getItem("avs_api_key") || "";
     const remember = localStorage.getItem("avs_remember_key");
-    if (remember === "1") {
-      rememberKey.checked = true;
-      if (saved) apiKeyInput.value = saved;
-    } else {
-      rememberKey.checked = false;
-    }
+    rememberKey.checked = remember === "1";
+    if (rememberKey.checked) apiKeyInput.value = saved;
   } catch {}
 })();
-
 rememberKey.addEventListener("change", () => {
   try {
     localStorage.setItem("avs_remember_key", rememberKey.checked ? "1" : "0");
-    if (!rememberKey.checked) {
-      localStorage.removeItem("avs_api_key");
-    }
+    if (!rememberKey.checked) localStorage.removeItem("avs_api_key");
   } catch {}
 });
-
 apiKeyInput.addEventListener("input", () => {
   try {
     if (rememberKey.checked) localStorage.setItem("avs_api_key", apiKeyInput.value.trim());
   } catch {}
 });
-
 clearKeyBtn.addEventListener("click", () => {
   apiKeyInput.value = "";
   try {
@@ -141,24 +142,41 @@ fileInput.addEventListener("change", () => {
   if (!f) return;
   const isAudio = f.type.startsWith("audio/");
   const isVideo = f.type.startsWith("video/");
-  detectedType.textContent = isAudio ? "Detected: AUDIO ✅" : isVideo ? "Detected: VIDEO ✅" : "Unknown file type";
+  detectedType.textContent = isAudio
+    ? `Detected: AUDIO ✅ (${f.type || "unknown"})`
+    : isVideo
+      ? `Detected: VIDEO ✅ (${f.type || "unknown"})`
+      : `Unknown (${f.type || "unknown"})`;
 });
 
 // =============================
-// FFmpeg (singleton)
+// FFmpeg load (GitHub Pages safe)
 // =============================
-let ffmpeg;
+let ffmpeg = null;
 async function getFFmpeg() {
   if (ffmpeg) return ffmpeg;
+
   ffmpeg = new FFmpeg();
+
   log("Loading FFmpeg core...");
-  await ffmpeg.load();
-  log("FFmpeg loaded!");
+  setStatus("Loading FFmpeg...");
+  bumpProgress(0.02);
+
+  const coreBaseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
+  const ffmpegBaseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm";
+
+  await ffmpeg.load({
+    coreURL: await toBlobURL(`${coreBaseURL}/ffmpeg-core.js`, "text/javascript"),
+    wasmURL: await toBlobURL(`${coreBaseURL}/ffmpeg-core.wasm`, "application/wasm"),
+    workerURL: await toBlobURL(`${ffmpegBaseURL}/worker.js`, "text/javascript"),
+  });
+
+  log("FFmpeg loaded ✅");
   return ffmpeg;
 }
 
 // =============================
-// Web Workers for transcription
+// Workers
 // =============================
 let simpleWorker = null;
 let bestWorker = null;
@@ -171,7 +189,6 @@ function getSimpleWorker() {
   }
   return simpleWorker;
 }
-
 function getBestWorker() {
   if (!bestWorker) {
     bestWorker = new Worker(new URL("./workers/bestDiarizationWorker.js", import.meta.url), {
@@ -181,7 +198,8 @@ function getBestWorker() {
   return bestWorker;
 }
 
-function workerRequest(worker, type, data) {
+// Worker request with progress mapped into a RANGE
+function workerRequest(worker, type, data, rangeStart = 0, rangeEnd = 1) {
   return new Promise((resolve, reject) => {
     const id = Math.random().toString(36).slice(2);
 
@@ -197,13 +215,19 @@ function workerRequest(worker, type, data) {
 
       if (msg.status === "complete") {
         cleanup();
+        bumpProgress(rangeEnd);
         resolve(msg.result);
         return;
       }
 
       if (msg.status === "progress") {
         if (msg.message) setStatus(msg.message);
-        if (typeof msg.progress === "number") setProgress(msg.progress);
+
+        if (typeof msg.progress === "number") {
+          const p = Math.max(0, Math.min(1, msg.progress));
+          const mapped = rangeStart + p * (rangeEnd - rangeStart);
+          bumpProgress(mapped);
+        }
       }
     };
 
@@ -214,339 +238,420 @@ function workerRequest(worker, type, data) {
   });
 }
 
+// ✅ BEST MODE: ALWAYS USE WASM (no WebGPU errors ever)
+async function bestLoadWasm(worker) {
+  setStatus("BEST: loading models (WASM, safe)...");
+  await workerRequest(worker, "load", { device: "wasm" }, 0.30, 0.36);
+  log("BEST: using WASM ✅");
+}
+
 // =============================
-// Convert any media -> Float32Array @ 16k mono
+// Extract 16k mono Float32 from a blob (per chunk)
 // =============================
-async function extract16kFloat32(fileBlob) {
+async function extract16kFloat32FromBlob(blob, hintName = "input") {
   const ff = await getFFmpeg();
-  ff.writeFile("input_media", await fetchFile(fileBlob));
+
+  const inputName = `in_${hintName}`;
+  const outName = `out_${hintName}.f32`;
+
+  try { await ff.deleteFile(inputName); } catch {}
+  try { await ff.deleteFile(outName); } catch {}
+
+  await ff.writeFile(inputName, await fetchFile(blob));
 
   await ff.exec([
-    "-i", "input_media",
+    "-i", inputName,
     "-vn",
     "-ac", "1",
     "-ar", "16000",
     "-f", "f32le",
-    "audio16k.f32"
+    outName
   ]);
 
-  const data = await ff.readFile("audio16k.f32");
-  const float32 = new Float32Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  const data = await ff.readFile(outName);
+  const float32 = new Float32Array(
+    data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+  );
 
-  try { ff.deleteFile("input_media"); } catch {}
-  try { ff.deleteFile("audio16k.f32"); } catch {}
+  try { await ff.deleteFile(inputName); } catch {}
+  try { await ff.deleteFile(outName); } catch {}
 
   return float32;
 }
 
 // =============================
-// DOCX builder
+// DOCX helper
 // =============================
-async function buildDocxFromPlainText(text) {
-  const doc = new Document({
-    sections: [{
-      children: [
-        new Paragraph({
-          children: [new TextRun({ text: text || "", font: "Calibri" })]
-        })
-      ],
-    }],
-  });
-
-  return await Packer.toBlob(doc);
-}
-
-async function buildDocxFromSpeakerSegments(lines) {
-  const children = [];
-  for (const line of lines) {
-    children.push(new Paragraph({
-      children: [new TextRun({ text: line, font: "Calibri" })]
-    }));
-  }
-
+async function docxFromLines(lines) {
+  const children = lines.map(
+    (t) => new Paragraph({ children: [new TextRun({ text: t, font: "Calibri" })] })
+  );
   const doc = new Document({ sections: [{ children }] });
   return await Packer.toBlob(doc);
 }
 
 // =============================
-// Split media into chunks with FFmpeg
+// Split media into chunks
 // =============================
 async function splitMedia(file, splitSec) {
   const ff = await getFFmpeg();
-  const inputName = "input_media";
-  ff.writeFile(inputName, await fetchFile(file));
 
+  const base = safeBaseName(file.name);
   const isAudio = file.type.startsWith("audio/");
   const isVideo = file.type.startsWith("video/");
+  const inputName = "input_media";
 
-  log(`File: ${file.name}`);
-  log(`Size: ${(file.size / 1024 / 1024).toFixed(1)} MB`);
-  log(`Split every: ${splitSec} sec (${(splitSec / 60).toFixed(2)} min)`);
+  try { await ff.deleteFile(inputName); } catch {}
+  await ff.writeFile(inputName, await fetchFile(file));
 
   const pattern = isAudio ? "chunk_%03d.mp3" : "chunk_%03d.mp4";
 
-  let cmd;
+  log(`File: ${file.name}`);
+  log(`Split every: ${splitSec}s (${(splitSec / 60).toFixed(1)} min)`);
+
+  bumpProgress(0.05);
+
   if (isAudio) {
-    log("\n--- AUDIO MODE ---");
-    cmd = [
+    setStatus("Splitting audio...");
+    await ff.exec([
       "-i", inputName,
       "-vn",
+      "-ac", "1",
+      "-ar", "16000",
       "-c:a", "libmp3lame",
-      "-b:a", "192k",
-      "-f", "segment",
-      "-segment_time", String(splitSec),
-      "-reset_timestamps", "1",
-      pattern
-    ];
-  } else if (isVideo) {
-    log("\n--- VIDEO MODE ---");
-    cmd = [
-      "-i", inputName,
-      "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-crf", "23",
-      "-c:a", "aac",
       "-b:a", "128k",
       "-f", "segment",
       "-segment_time", String(splitSec),
       "-reset_timestamps", "1",
       pattern
-    ];
+    ]);
+  } else if (isVideo) {
+    setStatus("Splitting video (fast copy)...");
+    try {
+      await ff.exec([
+        "-i", inputName,
+        "-map", "0",
+        "-c", "copy",
+        "-f", "segment",
+        "-segment_time", String(splitSec),
+        "-reset_timestamps", "1",
+        pattern
+      ]);
+    } catch {
+      log("Copy split failed -> fallback re-encode...");
+      setStatus("Splitting video (fallback re-encode)...");
+      await ff.exec([
+        "-i", inputName,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-f", "segment",
+        "-segment_time", String(splitSec),
+        "-reset_timestamps", "1",
+        pattern
+      ]);
+    }
   } else {
-    throw new Error("Unsupported file type. Please upload audio or video.");
+    throw new Error("Unsupported file type. Upload audio or video.");
   }
 
-  await ff.exec(cmd);
+  bumpProgress(0.25);
+  setStatus("Collecting chunks...");
 
-  const files = await ff.listDir(".");
-  const chunks = files
-    .map(x => x.name)
-    .filter(name => name.startsWith("chunk_") && (name.endsWith(".mp3") || name.endsWith(".mp4")))
+  const dir = await ff.listDir(".");
+  const names = dir
+    .map((x) => x.name)
+    .filter((n) => n.startsWith("chunk_") && (n.endsWith(".mp3") || n.endsWith(".mp4")))
     .sort();
 
-  if (chunks.length === 0) throw new Error("No chunks created. FFmpeg output failed.");
+  if (!names.length) throw new Error("No chunks created (FFmpeg failed).");
 
-  const out = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const name = chunks[i];
+  const chunks = [];
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
     const data = await ff.readFile(name);
-    const blob = new Blob([data.buffer], { type: name.endsWith(".mp3") ? "audio/mpeg" : "video/mp4" });
-    out.push({ name, blob });
 
-    try { ff.deleteFile(name); } catch {}
+    const mime = name.endsWith(".mp3") ? "audio/mpeg" : "video/mp4";
+    const blob = new Blob([data.buffer], { type: mime });
+
+    const niceName = `${base}_${String(i + 1).padStart(3, "0")}${name.endsWith(".mp3") ? ".mp3" : ".mp4"}`;
+    chunks.push({ name: niceName, blob });
+
+    try { await ff.deleteFile(name); } catch {}
   }
 
-  try { ff.deleteFile(inputName); } catch {}
+  try { await ff.deleteFile(inputName); } catch {}
 
-  return out;
+  bumpProgress(0.30);
+  return chunks;
 }
 
 // =============================
-// SIMPLE: local transcript only (NO speakers)
+// SIMPLE transcription (chunk-by-chunk)
 // =============================
-async function transcribeSimpleLocal(mediaBlob) {
-  setStatus("SIMPLE: extracting audio...");
-  setProgress(0.03);
-
-  const audio16k = await extract16kFloat32(mediaBlob);
-
-  setStatus("SIMPLE: transcribing...");
-  setProgress(0.08);
-
+async function transcribeSimpleChunks(chunks) {
   const worker = getSimpleWorker();
-  const result = await workerRequest(worker, "run", { audio: audio16k });
+  const allLines = [];
 
-  return result; // { text, raw }
+  const transcribeStart = 0.30;
+  const transcribeEnd = 0.88;
+  const perChunk = (transcribeEnd - transcribeStart) / chunks.length;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+
+    const chunkStart = transcribeStart + i * perChunk;
+    const chunkEnd = chunkStart + perChunk;
+
+    setStatus(`SIMPLE: transcribing chunk ${i + 1}/${chunks.length}...`);
+    bumpProgress(chunkStart);
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const audio16k = await extract16kFloat32FromBlob(c.blob, `simple_${i}`);
+    const res = await workerRequest(
+  worker,
+  "run",
+  { audio: audio16k, sampling_rate: 16000 },
+  chunkStart,
+  chunkEnd
+);
+
+
+    allLines.push(`Part ${String(i + 1).padStart(3, "0")}: ${c.name}`);
+    allLines.push((res?.text || "").trim() || "(no text)");
+    allLines.push("");
+  }
+
+  bumpProgress(transcribeEnd);
+  return allLines;
 }
 
 // =============================
-// BEST: local diarization in browser (speakers + timestamps)
+// BEST transcription (WASM only)
 // =============================
-async function transcribeBestDiarization(mediaBlob) {
-  setStatus("BEST: extracting audio...");
-  setProgress(0.03);
-
-  const audio16k = await extract16kFloat32(mediaBlob);
-
+async function transcribeBestChunks(chunks) {
   const worker = getBestWorker();
-  setStatus("BEST: loading models (first time is slow)...");
-  setProgress(0.06);
-  await workerRequest(worker, "load", { device: "webgpu" });
 
-  setStatus("BEST: transcribing + diarizing...");
-  setProgress(0.1);
+  // ✅ ALWAYS WASM, no WebGPU attempt
+  await bestLoadWasm(worker);
 
-  const result = await workerRequest(worker, "run", { audio: audio16k, language: "en" });
+  const allLines = [];
 
-  return result; // { transcript, segments }
+  const transcribeStart = 0.36;
+  const transcribeEnd = 0.88;
+  const perChunk = (transcribeEnd - transcribeStart) / chunks.length;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+
+    const chunkStart = transcribeStart + i * perChunk;
+    const chunkEnd = chunkStart + perChunk;
+
+    setStatus(`BEST: diarizing chunk ${i + 1}/${chunks.length}...`);
+    bumpProgress(chunkStart);
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const audio16k = await extract16kFloat32FromBlob(c.blob, `best_${i}`);
+    const bestRes = await workerRequest(
+  worker,
+  "run",
+  { audio: audio16k, sampling_rate: 16000 },
+  chunkStart,
+  chunkEnd
+);
+
+
+    const segments = bestRes?.segments || [];
+    const words = bestRes?.transcript?.chunks || [];
+
+    allLines.push(`Part ${String(i + 1).padStart(3, "0")}: ${c.name}`);
+    allLines.push("");
+
+    let prev = 0;
+    for (const seg of segments) {
+      if (!seg || seg.label === "NO_SPEAKER") continue;
+
+      const segmentWords = [];
+      for (let w = prev; w < words.length; w++) {
+        const word = words[w];
+        if (!word?.timestamp) continue;
+
+        const end = word.timestamp[1];
+        if (end <= seg.end) {
+          segmentWords.push(word.text);
+        } else {
+          prev = w;
+          break;
+        }
+      }
+
+      const joined = segmentWords.join("").trim();
+      if (!joined) continue;
+
+      allLines.push(`${seg.label} (${secondsToHMS(seg.start)} → ${secondsToHMS(seg.end)}): ${joined}`);
+    }
+
+    allLines.push("");
+  }
+
+  bumpProgress(transcribeEnd);
+  return allLines;
 }
 
 // =============================
-// PRO: OpenAI (best quality) via proxy
+// AI PRO transcription (chunk-by-chunk)
 // =============================
-async function transcribePro(mediaBlob, apiKey) {
+async function transcribeProChunks(chunks, apiKey) {
   if (!PROXY_URL || PROXY_URL.includes("YOUR-WORKER")) {
-    throw new Error("AI PRO not configured: set PROXY_URL inside src/main.js.");
+    throw new Error("AI PRO not configured: set PROXY_URL in src/main.js.");
   }
   if (!apiKey || !apiKey.startsWith("sk-")) {
     throw new Error("Missing OpenAI API key (sk-...).");
   }
 
-  setStatus("AI PRO: uploading...");
-  setProgress(0.12);
+  const allLines = [];
 
-  const form = new FormData();
-  form.append("file", mediaBlob, "media.wav");
-  form.append("apiKey", apiKey);
+  const transcribeStart = 0.30;
+  const transcribeEnd = 0.88;
+  const perChunk = (transcribeEnd - transcribeStart) / chunks.length;
 
-  const res = await fetch(PROXY_URL, { method: "POST", body: form });
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
 
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error("AI PRO proxy error: " + (t || res.status));
+    const chunkStart = transcribeStart + i * perChunk;
+    const chunkEnd = chunkStart + perChunk;
+
+    setStatus(`AI PRO: transcribing chunk ${i + 1}/${chunks.length}...`);
+    bumpProgress(chunkStart);
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const form = new FormData();
+    form.append("file", c.blob, c.name);
+
+    const res = await fetch(`${PROXY_URL}/transcribe`, {
+      method: "POST",
+      headers: { "X-OpenAI-Key": apiKey },
+      body: form,
+    });
+
+    const text = await res.text();
+    if (!res.ok) throw new Error(`AI PRO failed (${res.status}): ${text}`);
+
+    let json = null;
+    try { json = JSON.parse(text); } catch { json = { text }; }
+
+    allLines.push(`Part ${String(i + 1).padStart(3, "0")}: ${c.name}`);
+    allLines.push("");
+
+    if (json?.segments?.length) {
+      for (const s of json.segments) {
+        const who = s.speaker || "Speaker ?";
+        const t = (s.text || "").trim();
+        if (t) allLines.push(`${who}: ${t}`);
+      }
+    } else {
+      allLines.push((json?.text || "").trim());
+    }
+
+    allLines.push("");
+    bumpProgress(chunkEnd);
   }
 
-  return await res.json();
+  bumpProgress(transcribeEnd);
+  return allLines;
 }
 
 // =============================
-// MAIN BUTTON
+// MAIN
 // =============================
 startBtn.addEventListener("click", async () => {
   clearOutputs();
   logEl.textContent = "";
-  setProgress(0);
+  resetProgress();
   setStatus("");
 
   const file = fileInput.files?.[0];
-  if (!file) {
-    alert("Pick a file first.");
-    return;
-  }
+  if (!file) return alert("Pick a file first.");
 
-  let splitSec = splitSize.value === "custom"
-    ? Number(customSeconds.value)
-    : Number(splitSize.value);
+  const splitSec =
+    splitSize.value === "custom" ? Number(customSeconds.value) : Number(splitSize.value);
 
-  if (!Number.isFinite(splitSec) || splitSec <= 0) {
-    alert("Invalid split time.");
-    return;
-  }
+  if (!Number.isFinite(splitSec) || splitSec <= 0) return alert("Invalid split time.");
 
   const mode = modeSelect.value;
+  const base = safeBaseName(file.name);
 
   try {
     startBtn.disabled = true;
+
     setStatus("Starting...");
-    setProgress(0.02);
+    bumpProgress(0.01);
 
-    // A) Split into chunks
-    setStatus("Splitting into chunks...");
+    // 1) Split
     const chunks = await splitMedia(file, splitSec);
-
-    setStatus(`Created ${chunks.length} chunks. Building downloads...`);
-    setProgress(0.35);
+    setStatus(`Created ${chunks.length} chunks ✅`);
+    bumpProgress(0.30);
 
     for (const c of chunks) addDownloadLink(c.blob, c.name);
 
-    // B) Optional transcription
-    let transcriptDocxBlob = null;
-    let transcriptJsonBlob = null;
+    // 2) Transcribe
+    let transcriptLines = null;
 
-    if (mode !== "none") {
-      log(`\n--- TRANSCRIPTION MODE: ${mode.toUpperCase()} ---`);
-
-      if (mode === "simple") {
-        const res = await transcribeSimpleLocal(file);
-        transcriptDocxBlob = await buildDocxFromPlainText(res?.text || "");
-        transcriptJsonBlob = new Blob([JSON.stringify(res, null, 2)], { type: "application/json" });
-
-        addDownloadLink(transcriptDocxBlob, "transcript_simple.docx");
-        addDownloadLink(transcriptJsonBlob, "transcript_simple.json");
-      }
-
-      if (mode === "best") {
-        const bestRes = await transcribeBestDiarization(file);
-
-        const segments = bestRes?.segments || [];
-        const words = bestRes?.transcript?.chunks || [];
-
-        let prev = 0;
-        const lines = [];
-
-        for (const seg of segments) {
-          if (seg.label === "NO_SPEAKER") continue;
-
-          const segmentWords = [];
-          for (let i = prev; i < words.length; i++) {
-            const w = words[i];
-            if (w.timestamp?.[1] <= seg.end) {
-              segmentWords.push(w.text);
-            } else {
-              prev = i;
-              break;
-            }
-          }
-
-          const joined = segmentWords.join("").trim();
-          if (!joined) continue;
-
-          lines.push(`${seg.label} (${secondsToHMS(seg.start)} → ${secondsToHMS(seg.end)}): ${joined}`);
-        }
-
-        transcriptDocxBlob = await buildDocxFromSpeakerSegments(lines);
-        transcriptJsonBlob = new Blob([JSON.stringify(bestRes, null, 2)], { type: "application/json" });
-
-        addDownloadLink(transcriptDocxBlob, "transcript_best.docx");
-        addDownloadLink(transcriptJsonBlob, "transcript_best.json");
-      }
-
-      if (mode === "pro") {
-        const key = apiKeyInput.value.trim();
-        const proRes = await transcribePro(file, key);
-
-        transcriptDocxBlob = await buildDocxFromPlainText(proRes?.text || "");
-        transcriptJsonBlob = new Blob([JSON.stringify(proRes, null, 2)], { type: "application/json" });
-
-        addDownloadLink(transcriptDocxBlob, "transcript_pro.docx");
-        addDownloadLink(transcriptJsonBlob, "transcript_pro.json");
-      }
+    if (mode === "simple") {
+      log("\n--- SIMPLE TRANSCRIPTION ---");
+      transcriptLines = await transcribeSimpleChunks(chunks);
+    } else if (mode === "best") {
+      log("\n--- BEST WEBSITE (DIARIZATION) ---");
+      transcriptLines = await transcribeBestChunks(chunks);
+    } else if (mode === "pro") {
+      log("\n--- AI PRO (GPT) ---");
+      const key = apiKeyInput.value.trim();
+      transcriptLines = await transcribeProChunks(chunks, key);
     }
 
-    // C) ZIP everything
+    // 3) Transcript docx
+    let transcriptDocx = null;
+    if (transcriptLines) {
+      setStatus("Building transcript.docx...");
+      bumpProgress(0.90);
+      transcriptDocx = await docxFromLines(transcriptLines);
+      addDownloadLink(transcriptDocx, `${base}_transcript.docx`);
+    }
+
+    // 4) ZIP
     setStatus("Building ZIP...");
-    setProgress(0.7);
+    bumpProgress(0.95);
 
     const zip = new JSZip();
     const folder = zip.folder("chunks");
+
     for (const c of chunks) folder.file(c.name, c.blob);
+    if (transcriptDocx) zip.file("transcript.docx", transcriptDocx);
 
-    if (transcriptDocxBlob) zip.file("transcript.docx", transcriptDocxBlob);
-    if (transcriptJsonBlob) zip.file("transcript.json", transcriptJsonBlob);
+    const zipBlob = await zip.generateAsync({ type: "blob" });
 
-    const zipBlob = await zip.generateAsync({ type: "blob" }, (meta) => {
-      setProgress(0.7 + (meta.percent / 100) * 0.3);
-      setStatus(`Building ZIP... ${meta.percent.toFixed(0)}%`);
-    });
-
-    const zipLink = addDownloadLink(zipBlob, "output.zip");
-
+    const zipLink = addDownloadLink(zipBlob, `${base}_output.zip`);
     zipBtn.style.display = "";
     zipBtn.onclick = () => {
       const a = document.createElement("a");
       a.href = zipLink.url;
-      a.download = "output.zip";
+      a.download = `${base}_output.zip`;
       a.click();
     };
 
-    setProgress(1);
+    bumpProgress(1);
     setStatus("✅ Done!");
     log("\n✅ Done!");
   } catch (err) {
     console.error(err);
-    alert(err?.message || String(err));
-    setStatus("❌ Error: " + (err?.message || String(err)));
+    setStatus("❌ " + (err?.message || String(err)));
     log("❌ " + (err?.message || String(err)));
+    alert(err?.message || String(err));
   } finally {
     startBtn.disabled = false;
   }

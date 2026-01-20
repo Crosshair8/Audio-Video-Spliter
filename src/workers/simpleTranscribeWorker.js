@@ -1,25 +1,40 @@
-import { pipeline } from "@xenova/transformers";
+import { pipeline } from "@huggingface/transformers";
 
-// SIMPLE mode: transcript only, no diarization
-const MODEL_ID = "onnx-community/whisper-base_timestamped";
+// ✅ SIMPLE MODE (FAST + SAFE)
+// ✅ WASM ONLY (so no one ever needs unsafe WebGPU flags)
+const MODEL_ID = "Xenova/whisper-tiny.en";
+
 let transcriber = null;
 
 async function load(progress_cb) {
   if (transcriber) return transcriber;
 
-  progress_cb?.(0.05, "Loading SIMPLE transcription model...");
+  progress_cb?.(0.05, "SIMPLE: loading model (first time downloads files)...");
+
+  // ✅ FORCE WASM ALWAYS
+  const device = "wasm";
+
   transcriber = await pipeline("automatic-speech-recognition", MODEL_ID, {
-    device: "wasm",
+    device,
     dtype: "q8",
     progress_callback: (x) => {
       if (x?.status === "progress") {
-        progress_cb?.(0.05 + (x.progress ?? 0) * 0.3, x.data ?? "Loading...");
+        progress_cb?.(0.05 + (x.progress ?? 0) * 0.25, x.data ?? "Loading...");
       }
     },
   });
 
-  progress_cb?.(0.35, "Model loaded!");
+  progress_cb?.(0.35, "SIMPLE: model loaded ✅");
   return transcriber;
+}
+
+function normalizeToF32(input) {
+  if (!input) return new Float32Array();
+  if (input instanceof Float32Array) return input;
+  if (input instanceof ArrayBuffer) return new Float32Array(input);
+  if (ArrayBuffer.isView(input)) return new Float32Array(input.buffer);
+  if (Array.isArray(input)) return Float32Array.from(input);
+  return new Float32Array();
 }
 
 self.onmessage = async (e) => {
@@ -30,22 +45,32 @@ self.onmessage = async (e) => {
   };
 
   try {
-    if (type === "run") {
-      sendProgress(0.01, "Loading SIMPLE model...");
-      const t = await load(sendProgress);
+    if (type !== "run") throw new Error("Unknown worker request");
 
-      sendProgress(0.4, "Transcribing...");
-      const out = await t(data.audio, {
-        return_timestamps: "word",
-        chunk_length_s: 30,
-      });
+    sendProgress(0.02, "SIMPLE: preparing...");
+    const t = await load(sendProgress);
 
-      sendProgress(1, "Done");
-      self.postMessage({ id, status: "complete", result: { text: out.text, raw: out } });
+    const audioF32 = normalizeToF32(data?.audio);
+
+    // ✅ prevent crashes on silent/empty chunks
+    if (!audioF32 || audioF32.length < 1000) {
+      sendProgress(1, "SIMPLE: skipped (no audio detected)");
+      self.postMessage({ id, status: "complete", result: { text: "" } });
       return;
     }
 
-    throw new Error("Unknown worker message type");
+    sendProgress(0.50, "SIMPLE: transcribing...");
+
+    // ✅ PASS Float32Array DIRECTLY
+    const out = await t(audioF32, {
+      chunk_length_s: 20,
+      stride_length_s: 5,
+      condition_on_previous_text: false,
+      repetition_penalty: 1.05,
+    });
+
+    sendProgress(1, "SIMPLE: done ✅");
+    self.postMessage({ id, status: "complete", result: { text: out?.text || "" } });
   } catch (err) {
     self.postMessage({ id, status: "error", error: err?.message || String(err) });
   }
