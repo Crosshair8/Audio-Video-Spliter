@@ -38,13 +38,15 @@
         font-weight: 700;
       }
       button:disabled { opacity: 0.6; cursor: not-allowed; }
-      #links a {
+
+      #links a, #proLinks a {
         display: block;
         margin: 6px 0;
         color: #6cb6ff;
         text-decoration: none;
       }
-      #links a:hover { text-decoration: underline; }
+      #links a:hover, #proLinks a:hover { text-decoration: underline; }
+
       #detectedType {
         margin-top: 8px;
         opacity: 0.9;
@@ -72,6 +74,25 @@
       }
       @media(max-width: 800px){
         .row { grid-template-columns: 1fr; }
+      }
+
+      /* ✅ AI PRO layout */
+      .proRow {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 12px;
+        align-items: start;
+        margin-top: 8px;
+      }
+      @media(max-width: 900px){
+        .proRow { grid-template-columns: 1fr; }
+      }
+
+      #proLinks {
+        border: 1px solid #333;
+        border-radius: 10px;
+        padding: 10px;
+        background: #0f0f0f;
       }
     </style>
   </head>
@@ -142,19 +163,30 @@
     <div class="box" id="proBox" style="display:none;">
       <div style="font-weight:700;">AI PRO Settings</div>
 
-      <label>OpenAI API Key (sk-...)</label>
-      <input id="apiKey" type="password" placeholder="sk-..." />
+      <!-- ✅ KEY + LINKS SIDE BY SIDE -->
+      <div class="proRow">
+        <div>
+          <label>OpenAI API Key (sk-...)</label>
+          <input id="apiKey" type="password" placeholder="sk-..." />
 
-      <label style="display:flex; gap:10px; align-items:center; margin-top:10px;">
-        <input id="rememberKey" type="checkbox" style="width:auto;" />
-        Remember key on this device
-      </label>
+          <label style="display:flex; gap:10px; align-items:center; margin-top:10px;">
+            <input id="rememberKey" type="checkbox" style="width:auto;" />
+            Remember key on this device
+          </label>
 
-      <button id="clearKey" type="button" style="margin-top:8px;">
-        Clear saved key
-      </button>
+          <button id="clearKey" type="button" style="margin-top:8px;">
+            Clear saved key
+          </button>
+        </div>
 
-      <div class="small">
+        <!-- ✅ SHOWS IMMEDIATELY WHEN YOU PICK AI PRO -->
+        <div>
+          <div style="font-weight:700; margin-bottom:6px;">OpenAI Setup</div>
+          <div id="proLinks"></div>
+        </div>
+      </div>
+
+      <div class="small" style="margin-top:10px;">
         Your key is stored only in your browser storage if “Remember” is enabled.
       </div>
     </div>
