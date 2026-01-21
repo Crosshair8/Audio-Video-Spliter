@@ -7,7 +7,10 @@ import { fetchFile, toBlobURL } from "@ffmpeg/util";
 // AI PRO CONFIG (Cloudflare Worker base URL)
 // =============================
 const PROXY_URL = "https://lucjo.lucjosephgabrielsilva.workers.dev";
-const OPENAI_KEY_BUY_LINK = "https://platform.openai.com/api-keys";
+
+// ✅ OpenAI links
+const OPENAI_KEY_LINK = "https://platform.openai.com/api-keys";
+const OPENAI_BILLING_LINK = "https://platform.openai.com/account/billing/overview";
 
 // =============================
 // DOM
@@ -120,7 +123,7 @@ splitSize.addEventListener("change", () => {
 });
 
 // =============================
-// ONE dropdown options (renamed how you wanted)
+// ONE dropdown options
 // =============================
 
 // AUDIO (MP3) — Low / Medium / High
@@ -137,11 +140,11 @@ const WAV_QUALITY_OPTIONS = [
   { value: "orig", label: "High Quality" },   // 48k stereo
 ];
 
-// VIDEO (MP4) — Fast / Normal / Slow (speed based)
+// VIDEO (MP4) — Fast / Normal / Slow
 const MP4_SPEED_OPTIONS = [
-  { value: "copy", label: "Fast" },           // stream copy
-  { value: "reencode_23", label: "Normal" },  // re-encode
-  { value: "reencode_18", label: "Slow" },    // best re-encode
+  { value: "copy", label: "Fast" },
+  { value: "reencode_23", label: "Normal" },
+  { value: "reencode_18", label: "Slow" },
 ];
 
 function setQualityDropdown(options, defaultValue, labelText, hintText) {
@@ -164,8 +167,6 @@ function setQualityDropdown(options, defaultValue, labelText, hintText) {
 
 // =============================
 // Auto UI mode handling
-// - Video => force OFF + lock mode + show MP4 speed options
-// - Audio => allow mode choice + show MP3/WAV quality options
 // =============================
 function updateUIForFileAndMode() {
   const file = fileInput.files?.[0];
@@ -185,14 +186,12 @@ function updateUIForFileAndMode() {
       "MP4 Speed",
       "Fast = quickest. Normal/Slow = re-encode (more compatible, takes longer)."
     );
-
     return;
   }
 
   // AUDIO behavior
   modeSelect.disabled = false;
 
-  // show PRO box only for pro
   proBox.style.display = modeSelect.value === "pro" ? "" : "none";
 
   if (mode === "pro") {
@@ -200,24 +199,22 @@ function updateUIForFileAndMode() {
       WAV_QUALITY_OPTIONS,
       "best",
       "WAV Quality",
-      "Higher quality WAV = larger files. Best accuracy for AI PRO."
+      "Higher WAV quality = larger files (better for AI PRO accuracy)."
     );
   } else {
     setQualityDropdown(
       MP3_QUALITY_OPTIONS,
       "192",
       "MP3 Quality",
-      "High quality = larger MP3 files. Medium is recommended."
+      "Medium is recommended. High = bigger files."
     );
   }
 }
 
-// mode dropdown change
 modeSelect.addEventListener("change", () => {
   updateUIForFileAndMode();
 });
 
-// file change
 fileInput.addEventListener("change", () => {
   const f = fileInput.files?.[0];
   if (!f) return;
@@ -265,7 +262,7 @@ clearKeyBtn.addEventListener("click", () => {
 });
 
 // =============================
-// FFmpeg load (GitHub Pages safe)
+// FFmpeg load
 // =============================
 let ffmpeg = null;
 async function getFFmpeg() {
@@ -433,21 +430,14 @@ async function splitMedia(file, splitSec, mode) {
   const qualityValue = qualitySelect.value;
 
   let pattern = "chunk_%03d.mp3";
-
-  // VIDEO always MP4
   if (isVideo) pattern = "chunk_%03d.mp4";
-  // PRO audio is WAV
   else if (mode === "pro") pattern = "chunk_%03d.wav";
-
-  log(`File: ${file.name}`);
-  log(`Split every: ${splitSec}s (${(splitSec / 60).toFixed(1)} min)`);
 
   bumpProgress(0.05);
 
   if (isVideo) {
-    // MP4 speed choices
     if (qualityValue === "copy") {
-      setStatus("Splitting video (FAST copy)...");
+      setStatus("Splitting video (FAST)...");
       await ff.exec([
         "-i", inputName,
         "-map", "0",
@@ -459,7 +449,7 @@ async function splitMedia(file, splitSec, mode) {
       ]);
     } else {
       const crf = qualityValue === "reencode_18" ? "18" : "23";
-      setStatus(`Splitting video (re-encode ${qualityValue === "reencode_18" ? "SLOW" : "NORMAL"})...`);
+      setStatus(`Splitting video (${qualityValue === "reencode_18" ? "SLOW" : "NORMAL"})...`);
       await ff.exec([
         "-i", inputName,
         "-c:v", "libx264",
@@ -738,6 +728,12 @@ startBtn.addEventListener("click", async () => {
 
     for (const c of chunks) addDownloadLink(c.blob, c.name);
 
+    // ✅ AI PRO links (ONLY when PRO + audio)
+    if (mode === "pro" && isAudioFile(file)) {
+      addInfoLink(OPENAI_KEY_LINK, "🔑 Get / manage OpenAI API key");
+      addInfoLink(OPENAI_BILLING_LINK, "💳 Add billing / fix quota issues");
+    }
+
     // VIDEO => done here
     if (isVideoFile(file) || mode === "off") {
       setStatus("✅ Done! (Split only)");
@@ -765,9 +761,6 @@ startBtn.addEventListener("click", async () => {
       bumpProgress(1);
       return;
     }
-
-    // AI PRO show link
-    if (mode === "pro") addInfoLink(OPENAI_KEY_BUY_LINK, "🔑 Get / manage OpenAI API key");
 
     // 2) Transcribe
     let transcriptLines = null;
