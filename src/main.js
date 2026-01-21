@@ -99,6 +99,13 @@ function secondsToHMS(s) {
   return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
+function isVideoFile(file) {
+  return !!file && (file.type?.startsWith("video/") || /\.(mp4|mov|mkv|webm)$/i.test(file.name));
+}
+function isAudioFile(file) {
+  return !!file && (file.type?.startsWith("audio/") || /\.(mp3|m4a|wav|aac|ogg|flac)$/i.test(file.name));
+}
+
 // =============================
 // Split size UI
 // =============================
@@ -113,28 +120,31 @@ splitSize.addEventListener("change", () => {
 });
 
 // =============================
-// Quality options (ONE dropdown)
+// ONE dropdown options (renamed how you wanted)
 // =============================
 
-// MP3 presets for SIMPLE + BEST
+// AUDIO (MP3) — Low / Medium / High
 const MP3_QUALITY_OPTIONS = [
-  { value: "96", label: "Low (96 kbps)" },
-  { value: "128", label: "Normal (128 kbps)" },
-  { value: "192", label: "High (192 kbps)" },
-  { value: "256", label: "Very High (256 kbps)" },
-  { value: "320", label: "Best (320 kbps)" },
+  { value: "128", label: "Low Quality" },
+  { value: "192", label: "Medium Quality" },
+  { value: "320", label: "High Quality" },
 ];
 
-// WAV presets for PRO
+// AUDIO (WAV) — Low / Medium / High
 const WAV_QUALITY_OPTIONS = [
-  { value: "fast", label: "Fast (16kHz mono WAV)" },
-  { value: "good", label: "Good (24kHz mono WAV)" },
-  { value: "best", label: "Best (48kHz mono WAV)" },
-  { value: "orig", label: "Original-ish (48kHz stereo WAV)" },
+  { value: "fast", label: "Low Quality" },    // 16k mono
+  { value: "best", label: "Medium Quality" }, // 48k mono
+  { value: "orig", label: "High Quality" },   // 48k stereo
 ];
 
-function setQualityDropdown(options, defaultValue, labelText) {
-  // Save current selection if it exists and is valid in new options
+// VIDEO (MP4) — Fast / Normal / Slow (speed based)
+const MP4_SPEED_OPTIONS = [
+  { value: "copy", label: "Fast" },           // stream copy
+  { value: "reencode_23", label: "Normal" },  // re-encode
+  { value: "reencode_18", label: "Slow" },    // best re-encode
+];
+
+function setQualityDropdown(options, defaultValue, labelText, hintText) {
   const current = qualitySelect.value;
 
   qualitySelect.innerHTML = "";
@@ -146,39 +156,82 @@ function setQualityDropdown(options, defaultValue, labelText) {
   }
 
   qualityLabel.textContent = labelText;
+  qualityHint.textContent = hintText;
 
   const validCurrent = options.some((x) => x.value === current);
   qualitySelect.value = validCurrent ? current : defaultValue;
 }
 
-// ✅ This updates the ONE dropdown based on mode
-function autoAdjustQualityUI() {
+// =============================
+// Auto UI mode handling
+// - Video => force OFF + lock mode + show MP4 speed options
+// - Audio => allow mode choice + show MP3/WAV quality options
+// =============================
+function updateUIForFileAndMode() {
+  const file = fileInput.files?.[0];
+  const isVid = isVideoFile(file);
   const mode = modeSelect.value;
 
+  if (isVid) {
+    // ✅ FORCE OFF for video
+    modeSelect.value = "off";
+    modeSelect.disabled = true;
+
+    proBox.style.display = "none";
+
+    setQualityDropdown(
+      MP4_SPEED_OPTIONS,
+      "copy",
+      "MP4 Speed",
+      "Fast = quickest. Normal/Slow = re-encode (more compatible, takes longer)."
+    );
+
+    return;
+  }
+
+  // AUDIO behavior
+  modeSelect.disabled = false;
+
+  // show PRO box only for pro
+  proBox.style.display = modeSelect.value === "pro" ? "" : "none";
+
   if (mode === "pro") {
-    // WAV dropdown
     setQualityDropdown(
       WAV_QUALITY_OPTIONS,
       "best",
-      "WAV Quality (AI PRO)"
+      "WAV Quality",
+      "Higher quality WAV = larger files. Best accuracy for AI PRO."
     );
   } else {
-    // MP3 dropdown (simple + best)
-    const def = mode === "best" ? "256" : "192";
     setQualityDropdown(
       MP3_QUALITY_OPTIONS,
-      def,
-      "MP3 Quality (SIMPLE + BEST)"
+      "192",
+      "MP3 Quality",
+      "High quality = larger MP3 files. Medium is recommended."
     );
   }
 }
 
-// =============================
-// Mode UI
-// =============================
+// mode dropdown change
 modeSelect.addEventListener("change", () => {
-  proBox.style.display = modeSelect.value === "pro" ? "" : "none";
-  autoAdjustQualityUI();
+  updateUIForFileAndMode();
+});
+
+// file change
+fileInput.addEventListener("change", () => {
+  const f = fileInput.files?.[0];
+  if (!f) return;
+
+  const isAudio = isAudioFile(f);
+  const isVideo = isVideoFile(f);
+
+  detectedType.textContent = isAudio
+    ? `Detected: AUDIO ✅ (${f.type || "unknown"})`
+    : isVideo
+      ? `Detected: VIDEO ✅ (${f.type || "unknown"})`
+      : `Unknown (${f.type || "unknown"})`;
+
+  updateUIForFileAndMode();
 });
 
 // =============================
@@ -212,23 +265,6 @@ clearKeyBtn.addEventListener("click", () => {
 });
 
 // =============================
-// Detect file type
-// =============================
-fileInput.addEventListener("change", () => {
-  const f = fileInput.files?.[0];
-  if (!f) return;
-
-  const isAudio = f.type.startsWith("audio/");
-  const isVideo = f.type.startsWith("video/");
-
-  detectedType.textContent = isAudio
-    ? `Detected: AUDIO ✅ (${f.type || "unknown"})`
-    : isVideo
-      ? `Detected: VIDEO ✅ (${f.type || "unknown"})`
-      : `Unknown (${f.type || "unknown"})`;
-});
-
-// =============================
 // FFmpeg load (GitHub Pages safe)
 // =============================
 let ffmpeg = null;
@@ -258,7 +294,7 @@ async function getFFmpeg() {
 // Workers
 // =============================
 let simpleWorker = null;
-let bestWorker = null;
+let speakersWorker = null;
 
 function getSimpleWorker() {
   if (!simpleWorker) {
@@ -268,16 +304,15 @@ function getSimpleWorker() {
   }
   return simpleWorker;
 }
-function getBestWorker() {
-  if (!bestWorker) {
-    bestWorker = new Worker(new URL("./workers/bestDiarizationWorker.js", import.meta.url), {
+function getSpeakersWorker() {
+  if (!speakersWorker) {
+    speakersWorker = new Worker(new URL("./workers/bestDiarizationWorker.js", import.meta.url), {
       type: "module",
     });
   }
-  return bestWorker;
+  return speakersWorker;
 }
 
-// Worker request with progress mapped into a RANGE
 function workerRequest(worker, type, data, rangeStart = 0, rangeEnd = 1) {
   return new Promise((resolve, reject) => {
     const id = Math.random().toString(36).slice(2);
@@ -317,15 +352,14 @@ function workerRequest(worker, type, data, rangeStart = 0, rangeEnd = 1) {
   });
 }
 
-// ✅ BEST MODE: ALWAYS USE WASM
-async function bestLoadWasm(worker) {
-  setStatus("BEST: loading models (WASM, safe)...");
+async function speakersLoadWasm(worker) {
+  setStatus("SIMPLE + SPEAKERS: loading models (WASM, safe)...");
   await workerRequest(worker, "load", { device: "wasm" }, 0.30, 0.36);
-  log("BEST: using WASM ✅");
+  log("SIMPLE + SPEAKERS: using WASM ✅");
 }
 
 // =============================
-// Extract 16k mono Float32 from a blob
+// Extract 16k mono Float32 from blob
 // =============================
 async function extract16kFloat32FromBlob(blob, hintName = "input") {
   const ff = await getFFmpeg();
@@ -375,7 +409,6 @@ async function docxFromLines(lines) {
 function getWavPreset(preset) {
   switch (preset) {
     case "fast": return { ar: 16000, ac: 1 };
-    case "good": return { ar: 24000, ac: 1 };
     case "best": return { ar: 48000, ac: 1 };
     case "orig": return { ar: 48000, ac: 2 };
     default: return { ar: 48000, ac: 1 };
@@ -384,34 +417,65 @@ function getWavPreset(preset) {
 
 // =============================
 // Split media into chunks
-// SIMPLE/BEST audio => MP3 kbps from ONE dropdown
-// PRO => WAV from ONE dropdown
 // =============================
-async function splitMedia(file, splitSec, forceProWav = false) {
+async function splitMedia(file, splitSec, mode) {
   const ff = await getFFmpeg();
 
   const base = safeBaseName(file.name);
-  const isAudio = file.type.startsWith("audio/");
-  const isVideo = file.type.startsWith("video/");
+  const isAudio = isAudioFile(file);
+  const isVideo = isVideoFile(file);
+
   const inputName = "input_media";
 
   try { await ff.deleteFile(inputName); } catch {}
   await ff.writeFile(inputName, await fetchFile(file));
 
-  const outputWav = forceProWav === true;
+  const qualityValue = qualitySelect.value;
 
-  const pattern = outputWav
-    ? "chunk_%03d.wav"
-    : (isAudio ? "chunk_%03d.mp3" : "chunk_%03d.mp4");
+  let pattern = "chunk_%03d.mp3";
+
+  // VIDEO always MP4
+  if (isVideo) pattern = "chunk_%03d.mp4";
+  // PRO audio is WAV
+  else if (mode === "pro") pattern = "chunk_%03d.wav";
 
   log(`File: ${file.name}`);
   log(`Split every: ${splitSec}s (${(splitSec / 60).toFixed(1)} min)`);
 
   bumpProgress(0.05);
 
-  if (outputWav) {
-    const preset = getWavPreset(qualitySelect.value || "best");
-    setStatus("Splitting PRO audio as WAV (quality selectable)...");
+  if (isVideo) {
+    // MP4 speed choices
+    if (qualityValue === "copy") {
+      setStatus("Splitting video (FAST copy)...");
+      await ff.exec([
+        "-i", inputName,
+        "-map", "0",
+        "-c", "copy",
+        "-f", "segment",
+        "-segment_time", String(splitSec),
+        "-reset_timestamps", "1",
+        pattern
+      ]);
+    } else {
+      const crf = qualityValue === "reencode_18" ? "18" : "23";
+      setStatus(`Splitting video (re-encode ${qualityValue === "reencode_18" ? "SLOW" : "NORMAL"})...`);
+      await ff.exec([
+        "-i", inputName,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", crf,
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-f", "segment",
+        "-segment_time", String(splitSec),
+        "-reset_timestamps", "1",
+        pattern
+      ]);
+    }
+  } else if (isAudio && mode === "pro") {
+    const preset = getWavPreset(qualityValue || "best");
+    setStatus("AI PRO: splitting audio as WAV...");
     await ff.exec([
       "-i", inputName,
       "-vn",
@@ -424,8 +488,8 @@ async function splitMedia(file, splitSec, forceProWav = false) {
       pattern
     ]);
   } else if (isAudio) {
-    const kbps = Number(qualitySelect.value || 192);
-    setStatus("Splitting audio (MP3 quality selectable)...");
+    const kbps = Number(qualityValue || 192);
+    setStatus("Splitting audio as MP3...");
     await ff.exec([
       "-i", inputName,
       "-vn",
@@ -438,36 +502,8 @@ async function splitMedia(file, splitSec, forceProWav = false) {
       "-reset_timestamps", "1",
       pattern
     ]);
-  } else if (isVideo) {
-    setStatus("Splitting video (fast copy)...");
-    try {
-      await ff.exec([
-        "-i", inputName,
-        "-map", "0",
-        "-c", "copy",
-        "-f", "segment",
-        "-segment_time", String(splitSec),
-        "-reset_timestamps", "1",
-        pattern
-      ]);
-    } catch {
-      log("Copy split failed -> fallback re-encode...");
-      setStatus("Splitting video (fallback re-encode)...");
-      await ff.exec([
-        "-i", inputName,
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-f", "segment",
-        "-segment_time", String(splitSec),
-        "-reset_timestamps", "1",
-        pattern
-      ]);
-    }
   } else {
-    throw new Error("Unsupported file type. Upload audio or video.");
+    throw new Error("Unsupported file type.");
   }
 
   bumpProgress(0.25);
@@ -476,10 +512,7 @@ async function splitMedia(file, splitSec, forceProWav = false) {
   const dir = await ff.listDir(".");
   const names = dir
     .map((x) => x.name)
-    .filter((n) =>
-      n.startsWith("chunk_") &&
-      (n.endsWith(".mp3") || n.endsWith(".mp4") || n.endsWith(".wav"))
-    )
+    .filter((n) => n.startsWith("chunk_") && (n.endsWith(".mp3") || n.endsWith(".mp4") || n.endsWith(".wav")))
     .sort();
 
   if (!names.length) throw new Error("No chunks created (FFmpeg failed).");
@@ -499,11 +532,9 @@ async function splitMedia(file, splitSec, forceProWav = false) {
       { type: mime }
     );
 
-    const ext = name.endsWith(".wav")
-      ? ".wav"
-      : (name.endsWith(".mp3") ? ".mp3" : ".mp4");
-
+    const ext = name.endsWith(".wav") ? ".wav" : (name.endsWith(".mp3") ? ".mp3" : ".mp4");
     const niceName = `${base}_${String(i + 1).padStart(3, "0")}${ext}`;
+
     chunks.push({ name: niceName, blob });
 
     try { await ff.deleteFile(name); } catch {}
@@ -516,7 +547,7 @@ async function splitMedia(file, splitSec, forceProWav = false) {
 }
 
 // =============================
-// SIMPLE transcription
+// Transcribe functions
 // =============================
 async function transcribeSimpleChunks(chunks) {
   const worker = getSimpleWorker();
@@ -547,15 +578,11 @@ async function transcribeSimpleChunks(chunks) {
   return allLines;
 }
 
-// =============================
-// BEST transcription
-// =============================
-async function transcribeBestChunks(chunks) {
-  const worker = getBestWorker();
-  await bestLoadWasm(worker);
+async function transcribeSpeakersChunks(chunks) {
+  const worker = getSpeakersWorker();
+  await speakersLoadWasm(worker);
 
   const allLines = [];
-
   const transcribeStart = 0.36;
   const transcribeEnd = 0.88;
   const perChunk = (transcribeEnd - transcribeStart) / chunks.length;
@@ -565,15 +592,15 @@ async function transcribeBestChunks(chunks) {
     const chunkStart = transcribeStart + i * perChunk;
     const chunkEnd = chunkStart + perChunk;
 
-    setStatus(`BEST: diarizing chunk ${i + 1}/${chunks.length}...`);
+    setStatus(`SIMPLE + SPEAKERS: diarizing chunk ${i + 1}/${chunks.length}...`);
     bumpProgress(chunkStart);
     await new Promise((r) => setTimeout(r, 0));
 
-    const audio16k = await extract16kFloat32FromBlob(c.blob, `best_${i}`);
-    const bestRes = await workerRequest(worker, "run", { audio: audio16k }, chunkStart, chunkEnd);
+    const audio16k = await extract16kFloat32FromBlob(c.blob, `spk_${i}`);
+    const res = await workerRequest(worker, "run", { audio: audio16k }, chunkStart, chunkEnd);
 
-    const segments = bestRes?.segments || [];
-    const words = bestRes?.transcript?.chunks || [];
+    const segments = res?.segments || [];
+    const words = res?.transcript?.chunks || [];
 
     allLines.push(`Part ${String(i + 1).padStart(3, "0")}: ${c.name}`);
     allLines.push("");
@@ -605,9 +632,6 @@ async function transcribeBestChunks(chunks) {
   return allLines;
 }
 
-// =============================
-// AI PRO transcription
-// =============================
 async function transcribeProChunks(chunks, apiKey) {
   if (!PROXY_URL || PROXY_URL.includes("YOUR-WORKER")) {
     throw new Error("AI PRO not configured: set PROXY_URL in src/main.js.");
@@ -617,7 +641,6 @@ async function transcribeProChunks(chunks, apiKey) {
   }
 
   const allLines = [];
-
   const transcribeStart = 0.30;
   const transcribeEnd = 0.88;
   const perChunk = (transcribeEnd - transcribeStart) / chunks.length;
@@ -693,6 +716,12 @@ startBtn.addEventListener("click", async () => {
 
   if (!Number.isFinite(splitSec) || splitSec <= 0) return alert("Invalid split time.");
 
+  // force OFF if video
+  if (isVideoFile(file)) {
+    modeSelect.value = "off";
+    modeSelect.disabled = true;
+  }
+
   const mode = modeSelect.value;
   const base = safeBaseName(file.name);
 
@@ -702,30 +731,60 @@ startBtn.addEventListener("click", async () => {
     setStatus("Starting...");
     bumpProgress(0.01);
 
-    const chunks = await splitMedia(file, splitSec, mode === "pro");
+    // 1) Split
+    const chunks = await splitMedia(file, splitSec, mode);
     setStatus(`Created ${chunks.length} chunks ✅`);
     bumpProgress(0.30);
 
     for (const c of chunks) addDownloadLink(c.blob, c.name);
 
-    if (mode === "pro") {
-      addInfoLink(OPENAI_KEY_BUY_LINK, "🔑 Get / manage OpenAI API key");
+    // VIDEO => done here
+    if (isVideoFile(file) || mode === "off") {
+      setStatus("✅ Done! (Split only)");
+      bumpProgress(0.92);
+
+      // ZIP only
+      setStatus("Building ZIP...");
+      bumpProgress(0.95);
+
+      const zip = new JSZip();
+      const folder = zip.folder("chunks");
+      for (const c of chunks) folder.file(c.name, c.blob);
+
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const zipLink = addDownloadLink(zipBlob, `${base}_output.zip`);
+
+      zipBtn.style.display = "";
+      zipBtn.onclick = () => {
+        const a = document.createElement("a");
+        a.href = zipLink.url;
+        a.download = `${base}_output.zip`;
+        a.click();
+      };
+
+      bumpProgress(1);
+      return;
     }
 
+    // AI PRO show link
+    if (mode === "pro") addInfoLink(OPENAI_KEY_BUY_LINK, "🔑 Get / manage OpenAI API key");
+
+    // 2) Transcribe
     let transcriptLines = null;
 
     if (mode === "simple") {
       log("\n--- SIMPLE TRANSCRIPTION ---");
       transcriptLines = await transcribeSimpleChunks(chunks);
     } else if (mode === "best") {
-      log("\n--- BEST WEBSITE (DIARIZATION) ---");
-      transcriptLines = await transcribeBestChunks(chunks);
+      log("\n--- SIMPLE + SPEAKERS (BETA) ---");
+      transcriptLines = await transcribeSpeakersChunks(chunks);
     } else if (mode === "pro") {
-      log("\n--- AI PRO (GPT) ---");
+      log("\n--- AI PRO (OPENAI) ---");
       const key = apiKeyInput.value.trim();
       transcriptLines = await transcribeProChunks(chunks, key);
     }
 
+    // 3) Transcript docx
     let transcriptDocx = null;
     if (transcriptLines) {
       setStatus("Building transcript.docx...");
@@ -734,6 +793,7 @@ startBtn.addEventListener("click", async () => {
       addDownloadLink(transcriptDocx, `${base}_transcript.docx`);
     }
 
+    // 4) ZIP
     setStatus("Building ZIP...");
     bumpProgress(0.95);
 
@@ -767,5 +827,5 @@ startBtn.addEventListener("click", async () => {
   }
 });
 
-// ✅ Init once
-autoAdjustQualityUI();
+// ✅ init once
+updateUIForFileAndMode();
